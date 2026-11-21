@@ -1,0 +1,18 @@
+{
+ "updatedAt": "2026-10-13T10:15:02Z",
+ "stock": {
+  "type": "CM",
+  "symbol": "BAC",
+  "series": "EQ",
+  "openPrice": 54.439998626708984,
+  "highPrice": 54.85,
+  "lowPrice": 53.64,
+  "preClosePrice": 54.58,
+  "lastTradedPrice": 53.96,
+  "indicativeClosePrice": 0.0,
+  "change": -0.62,
+  "perChange": -1.14,
+  "volume": 44988032,
+  "latestTimestamp": "2026-10-13 15:45:02"
+ }
+}

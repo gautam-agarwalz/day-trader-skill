@@ -1,0 +1,4 @@
+# Python 3.10 or newer.
+# mcp: the official Model Context Protocol Python SDK, used as a plain client for NSE's official
+# MCP servers (mcp.nseindia.in): live quotes, the equity list, daily OHLCV. No language model is called.
+mcp>=2.3,<3

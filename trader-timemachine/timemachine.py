@@ -169,9 +169,14 @@ def chart_url(sym, host="query2"):
 
 
 def yahoo_symbol(sym):
-    """Yahoo's spelling: BRK.B -> BRK-B. An NSE symbol keeps its .NS suffix (RELIANCE.NS)."""
-    s = sym.upper()
-    return s if s.endswith(".NS") else s.replace(".", "-")
+    """Yahoo's spelling of an NSE symbol: RELIANCE -> RELIANCE.NS (a .NS suffix is kept as it is)."""
+    return nse_base(sym) + ".NS"
+
+
+def nse_base(sym):
+    """RELIANCE.NS or reliance -> RELIANCE."""
+    s = str(sym or "").strip().upper()
+    return s[:-3] if s.endswith(".NS") else s
 
 
 def _sleep(seconds):
@@ -670,7 +675,7 @@ def time_machine(text, plan, now_utc, replays=10000, seed=19, window=2, until=No
     result = chart_result(text, sym)
     meta, bars, dropped = parse_bars(result, now_utc)
     msym = str(meta.get("symbol") or "").upper()
-    if msym and msym != yahoo_symbol(sym):
+    if msym and nse_base(msym) != nse_base(sym):
         raise TMError("the data is for %s but the plan is for %s" % (msym, sym))
     gran = meta.get("dataGranularity")
     if gran and gran != "5m":

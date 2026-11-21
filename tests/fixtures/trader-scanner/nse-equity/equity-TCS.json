@@ -1,0 +1,26 @@
+{
+ "segment": "EQUITY",
+ "updatedAt": "2026-11-21T17:55:11.597862099Z",
+ "returned": 1,
+ "stocks": [
+  {
+   "type": "CM",
+   "symbol": "TCS",
+   "series": "EQ",
+   "openPrice": 2325.0,
+   "highPrice": 2414.8,
+   "lowPrice": 2317.0,
+   "preClosePrice": 2342.7,
+   "lastTradedPrice": 2376.2,
+   "indicativeClosePrice": 0.0,
+   "change": 33.5,
+   "perChange": 1.43,
+   "volume": 2960416,
+   "value": 707.130886592,
+   "fiftyTwoWeekHigh": 3350.0,
+   "fiftyTwoWeekLow": 1976.8,
+   "perChange30d": -3.44,
+   "latestTimestamp": "2026-11-20 16:00:28"
+  }
+ ]
+}

@@ -1,0 +1,18 @@
+{
+ "updatedAt": "2026-10-19T05:07:13Z",
+ "stock": {
+  "type": "CM",
+  "symbol": "TSLA",
+  "series": "EQ",
+  "openPrice": 357.4849853515625,
+  "highPrice": 367.57,
+  "lowPrice": 354.47,
+  "preClosePrice": 354.72,
+  "lastTradedPrice": 366.475,
+  "indicativeClosePrice": 0.0,
+  "change": 11.755,
+  "perChange": 3.31,
+  "volume": 15051423,
+  "latestTimestamp": "2026-10-19 10:37:13"
+ }
+}

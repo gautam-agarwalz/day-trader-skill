@@ -1,0 +1,18 @@
+{
+ "updatedAt": "2026-10-13T10:15:02Z",
+ "stock": {
+  "type": "CM",
+  "symbol": "KO",
+  "series": "EQ",
+  "openPrice": 90.55999755859375,
+  "highPrice": 90.56,
+  "lowPrice": 89.67,
+  "preClosePrice": 89.79,
+  "lastTradedPrice": 90.11,
+  "indicativeClosePrice": 0.0,
+  "change": 0.32,
+  "perChange": 0.36,
+  "volume": 15313783,
+  "latestTimestamp": "2026-10-13 15:45:02"
+ }
+}

@@ -31,13 +31,15 @@ are for the plan's day only). An above / below alert rings ONCE and then stays
 quiet until you reset it, unless the rule has "rearm": true (it re-arms when
 the price crosses back). A pct_move alert rings at most once per day.
 
-Quotes (free, delayed, unofficial; for alerts only, never for timing an order):
-  yahoo   https://query2.finance.yahoo.com/v8/finance/chart/TSLA (falls back to
-          query1 on a 429 or a 5xx; one retry with a pause on a 429; one
-          request per ticker, half a second apart; the default)
-  stooq   https://stooq.com/q/l/?s=tsla.us&f=sd2t2ohlcv&h&e=csv (Stooq's free
-          CSV; it answered 404 on 2026-10-13, kept for when it is back)
-  --offline DIR reads DIR/<source>-<TICKER>.json|csv (or .json.gz) instead.
+Quotes (for alerts and sizing checks, never for timing an order): NSE's official
+CM Market Live MCP server, https://mcp.nseindia.in/cmmkt/mcp, tool
+cm_get_stock_quote, one call per symbol over one connection (data refreshes
+every minute), through nse_data.py with the mcp Python SDK. No language model
+is involved. Symbols are NSE's own (RELIANCE, TCS); a .NS suffix is accepted.
+A symbol NSE cannot serve (time out, failure, empty answer) goes to the backup
+hook, nse_data.fetch_backup_data(): today the last quote cached in
+trader/cache/quotes.csv, marked "source": "cache" and keeping its quote time.
+  --offline DIR reads DIR/nse-<SYMBOL>.json (a cm_get_stock_quote answer) instead.
 
 NSE calendar: the session is 9:15 a.m. to 3:30 p.m. India time (IST, UTC+5:30,
 no daylight saving), and the 2026 equity-segment trading holidays as published
@@ -46,23 +48,15 @@ Outside those years the clock says the holiday list is unknown.
 """
 
 import argparse
-import csv
 import datetime
-import gzip
-import io
 import json
 import os
 import re
 import sys
-import time
-import urllib.error
-import urllib.parse
-import urllib.request
 
-UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Jakeschincariol/day-trader-skill)"
-PAUSE = 0.5    # seconds between requests: be polite to free endpoints
-BACKOFF = 2.0  # seconds to wait before the one retry after a 429
-YAHOO_HOSTS = ("query2.finance.yahoo.com", "query1.finance.yahoo.com")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import nse_data  # noqa: E402  (NSE's official MCP servers + the backup hook; this folder)
+
 HHMM = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
 
 NSE_HOLIDAYS = {  # NSE equity segment trading holidays on weekdays, 2026 (NSE circulars)
@@ -169,144 +163,43 @@ def market_status(now_utc):
 
 # ---------------------------------------------------------------- quotes
 
-def stooq_url(sym):
-    return "https://stooq.com/q/l/?s=%s.us&f=sd2t2ohlcv&h&e=csv" % sym.lower().replace(".", "-")
-
-
-def yahoo_symbol(sym):
-    """Yahoo's spelling: BRK.B -> BRK-B. An NSE symbol keeps its .NS suffix (RELIANCE.NS)."""
-    s = sym.upper()
-    return s if s.endswith(".NS") else s.replace(".", "-")
-
-
-def yahoo_url(sym, host=YAHOO_HOSTS[0]):
-    return "https://%s/v8/finance/chart/%s?range=1d&interval=1d" % (
-        host, urllib.parse.quote(yahoo_symbol(sym), safe=".-^="))
-
-
-def parse_stooq(text, sym):
-    """Symbol,Date,Time,Open,High,Low,Close,Volume -> quote. N/D means no data."""
-    rows = list(csv.DictReader(io.StringIO(text.strip())))
-    if not rows:
-        raise AlertError("Stooq returned no rows for %s" % sym)
-    r = {k.strip().lower(): (v or "").strip() for k, v in rows[0].items() if k}
-    close = r.get("close", "")
-    if not close or close.upper() == "N/D":
-        raise AlertError("Stooq has no data for %s (check the ticker)" % sym)
-
-    def f(k):
-        v = r.get(k, "")
-        try:
-            return float(v)
-        except ValueError:
-            return None
-    return {"symbol": sym.upper(), "price": float(close), "open": f("open"), "high": f("high"),
-            "low": f("low"), "prev_close": None, "time": ("%s %s" % (r.get("date", ""), r.get("time", ""))).strip(),
-            "source": "stooq"}
-
-
-def parse_yahoo(text, sym):
-    try:
-        data = json.loads(text)
-        res = data["chart"]["result"]
-    except (ValueError, KeyError, TypeError):
-        raise AlertError("Yahoo returned something unexpected for %s" % sym)
-    if not res:
-        err = (data.get("chart") or {}).get("error") or {}
-        raise AlertError("Yahoo has no data for %s: %s" % (sym, err.get("description", "unknown ticker")))
-    m = res[0].get("meta", {})
-    price = m.get("regularMarketPrice")
-    if price is None:
-        raise AlertError("Yahoo has no price for %s" % sym)
-    t = m.get("regularMarketTime")
-    when = (datetime.datetime.fromtimestamp(t, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-            if t else "")
-    q = (res[0].get("indicators", {}).get("quote") or [{}])[0]
-    opens = [x for x in (q.get("open") or []) if x is not None]
-    return {"symbol": sym.upper(), "price": float(price), "open": opens[0] if opens else None,
-            "high": m.get("regularMarketDayHigh"), "low": m.get("regularMarketDayLow"),
-            "prev_close": m.get("previousClose") or m.get("chartPreviousClose"), "time": when,
-            "currency": m.get("currency"), "source": "yahoo"}
-
-
-_urlopen = urllib.request.urlopen   # tests swap these two
-_sleep = time.sleep
-
-
-def _get(url, timeout=20):
-    """(HTTP status, body). A network failure is an AlertError."""
-    req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "*/*"})
-    try:
-        with _urlopen(req, timeout=timeout) as r:
-            return 200, r.read().decode("utf-8", "replace")
-    except urllib.error.HTTPError as e:
-        try:
-            body = e.read().decode("utf-8", "replace")
-        except Exception:
-            body = ""
-        finally:
-            try:
-                e.close()
-            except Exception:
-                pass
-        return e.code, body
-    except urllib.error.URLError as e:
-        raise AlertError("could not reach %s: %s" % (url.split("/")[2], e.reason))
-
-
-def fetch(url, timeout=20):
-    code, text = _get(url, timeout)
-    if code != 200:
-        raise AlertError("%s answered HTTP %d" % (url.split("?")[0], code))
-    return text
-
-
-def fetch_yahoo(sym, timeout=20):
-    """query2 first. A 429 waits BACKOFF seconds and tries once more; a 429 or a 5xx
-    after that moves on to query1. A 404 comes back as Yahoo's own error JSON."""
-    last = None
-    for host in YAHOO_HOSTS:
-        url = yahoo_url(sym, host)
-        code, text = _get(url, timeout)
-        if code == 429:
-            _sleep(BACKOFF)
-            code, text = _get(url, timeout)
-        if code == 200:
-            return text
-        if code == 404 and text.strip().startswith("{"):
-            return text
-        last = (url, code)
-        if code != 429 and code < 500:
-            break
-    raise AlertError("%s answered HTTP %d" % (last[0].split("?")[0], last[1]))
-
-
-def _offline_text(folder, source, sym):
-    ext = "csv" if source == "stooq" else "json"
-    base = os.path.join(folder, "%s-%s.%s" % (source, sym, ext))
-    if os.path.exists(base):
-        with open(base, encoding="utf-8") as fh:
-            return fh.read()
-    if os.path.exists(base + ".gz"):
-        with gzip.open(base + ".gz", "rt", encoding="utf-8") as fh:
-            return fh.read()
-    raise AlertError("no offline quote file %s" % base)
-
-
-def get_quotes(symbols, source="yahoo", offline=None, pause=PAUSE):
-    """{SYM: quote} and [errors]. One request per ticker, with a pause between."""
-    quotes, errors = {}, []
-    for i, sym in enumerate(symbols):
-        sym = sym.upper()
-        try:
-            if offline:
-                text = _offline_text(offline, source, sym)
+def _offline_doc(folder, sym):
+    for name in ("nse-%s.json" % sym, "nse-%s.json.gz" % sym):
+        path = os.path.join(folder, name)
+        if os.path.exists(path):
+            if name.endswith(".gz"):
+                import gzip
+                with gzip.open(path, "rt", encoding="utf-8") as fh:
+                    text = fh.read()
             else:
-                if i and pause:
-                    _sleep(pause)
-                text = fetch(stooq_url(sym)) if source == "stooq" else fetch_yahoo(sym)
-            quotes[sym] = parse_stooq(text, sym) if source == "stooq" else parse_yahoo(text, sym)
-        except AlertError as e:
+                with open(path, encoding="utf-8") as fh:
+                    text = fh.read()
+            try:
+                return json.loads(text)
+            except ValueError as e:
+                raise AlertError("%s is not valid JSON: %s" % (path, e))
+    raise AlertError("no offline quote file %s" % os.path.join(folder, "nse-%s.json" % sym))
+
+
+def get_quotes(symbols, offline=None, cache_dir=None):
+    """{SYM: quote} and [errors]. Live: NSE's MCP server, with the backup hook for any symbol it
+    cannot serve. Offline: DIR/nse-<SYM>.json files (no backup)."""
+    syms = []
+    for s in symbols:
+        s = nse_data.nse_symbol(s)
+        if s and s not in syms:
+            syms.append(s)
+    if not offline:
+        quotes, errs = nse_data.fetch_quotes(syms, cache_dir=cache_dir)
+        return quotes, ["%s: %s" % (s, e) for s, e in sorted(errs.items())]
+    quotes, errors = {}, []
+    for sym in syms:
+        try:
+            doc = _offline_doc(offline, sym)
+            if isinstance(doc, dict) and doc.get("error"):
+                raise AlertError("%s: %s" % (sym, doc["error"]))
+            quotes[sym] = nse_data.parse_live_quote(doc, sym)
+        except (AlertError, nse_data.NSEError) as e:
             errors.append(str(e))
     return quotes, errors
 
@@ -447,7 +340,7 @@ def evaluate(rules, quotes, status, state, now_utc):
                 rung[rid] = stamp
             continue
         sym = r["symbol"].upper()
-        q = quotes.get(sym)
+        q = quotes.get(sym) or quotes.get(nse_data.nse_symbol(sym))
         if not q:
             continue
         p = q["price"]
@@ -545,13 +438,14 @@ def cmd_clock(a):
 
 
 def cmd_quote(a):
-    syms = _dedupe([s.upper() for s in a.symbols] + (holdings(a) if a.holdings else []))
+    syms = _dedupe([nse_data.nse_symbol(s) for s in a.symbols] +
+                   [nse_data.nse_symbol(s) for s in (holdings(a) if a.holdings else [])])
     if not syms:
         raise AlertError("which tickers? alerts.py quote TSLA KO, or --holdings")
     now = parse_now(a.now)
-    quotes, errors = get_quotes(syms, a.source, a.offline)
+    quotes, errors = get_quotes(syms, a.offline)
     if a.write and quotes:
-        write_prices(a.write, quotes, now, a.source)
+        write_prices(a.write, quotes, now, "offline" if a.offline else "nse")
     if a.json:
         print(json.dumps({"quotes": quotes, "errors": errors}, indent=2))
     else:
@@ -578,14 +472,14 @@ def cmd_check(a):
     now = parse_now(a.now)
     status = market_status(now)
     watched = [r for r in rules if active(r, status["date"])]
-    syms = _dedupe([str(r.get("symbol", "")).upper() for r in watched if r.get("type") not in NO_QUOTE])
-    quotes, errors = (get_quotes(syms, a.source, a.offline) if syms else ({}, []))
+    syms = _dedupe([nse_data.nse_symbol(r.get("symbol", "")) for r in watched if r.get("type") not in NO_QUOTE])
+    quotes, errors = (get_quotes(syms, a.offline) if syms else ({}, []))
     state = _read(a.state, {})
     rings, state = evaluate(rules, quotes, status, state, now)
     if not a.no_write:
         _write(a.state, state)
         if quotes:
-            write_prices(a.prices_out, quotes, now, a.source)
+            write_prices(a.prices_out, quotes, now, "offline" if a.offline else "nse")
     if a.json:
         print(json.dumps({"market": status, "rings": rings, "errors": errors,
                           "quotes": {s: q["price"] for s, q in quotes.items()}}, indent=2))
@@ -705,8 +599,7 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd")
 
     def net(p):
-        p.add_argument("--source", default="yahoo", choices=["yahoo", "stooq"])
-        p.add_argument("--offline", metavar="DIR", help="read <source>-<TICKER>.json|csv files, no network")
+        p.add_argument("--offline", metavar="DIR", help="read nse-<SYMBOL>.json files, no network")
         p.add_argument("--now", help="pretend it is this time (no offset = India time, IST)")
         p.add_argument("--json", action="store_true")
 

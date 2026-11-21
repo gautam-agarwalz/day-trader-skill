@@ -12,11 +12,11 @@ from contextlib import redirect_stdout, redirect_stderr
 from _load import load, ROOT, FIX
 
 alerts = load("trader-alerts", "alerts")
+nse = alerts.nse_data
 
 QDIR = os.path.join(FIX, "trader-alerts")
 PLAN = os.path.join(FIX, "trader-budget", "plan-tsla.json")
 DT = datetime.datetime
-UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Jakeschincariol/day-trader-skill)"
 
 # NSE equity-segment trading holidays on weekdays, 2026 (NSE circulars, incl. the Jan 15 civic-poll closure)
 NSE_2026 = ["2026-01-15", "2026-01-26", "2026-03-03", "2026-03-26", "2026-03-31", "2026-04-03",
@@ -88,134 +88,127 @@ class Calendar(unittest.TestCase):
 
 
 class Quotes(unittest.TestCase):
-    def test_nse_symbols_keep_their_suffix(self):
-        self.assertIn("/v8/finance/chart/RELIANCE.NS?", alerts.yahoo_url("reliance.ns"))
-        self.assertIn("/v8/finance/chart/M%26M.NS?", alerts.yahoo_url("M&M.NS"))
-        self.assertIn("/v8/finance/chart/BRK-B?", alerts.yahoo_url("BRK.B"))
+    def test_a_real_nse_quote(self):
+        # recorded from NSE's CM Market Live MCP server (cm_get_stock_quote RELIANCE), 2026-11-21
+        with open(os.path.join(QDIR, "nse-RELIANCE.json")) as fh:
+            q = nse.parse_live_quote(json.load(fh), "RELIANCE")
+        self.assertEqual((q["price"], q["prev_close"], q["open"], q["high"], q["low"]),
+                         (1377.5, 1375.6, 1369.0, 1383.0, 1356.1))
+        self.assertEqual((q["volume"], q["currency"], q["source"]), (13167730, "INR", "nse"))
+        self.assertEqual(q["time"], "2026-11-20T10:30:28Z")         # 16:00:28 IST
 
-    def test_yahoo_fixtures(self):
-        with open(os.path.join(QDIR, "yahoo-AAPL.json")) as fh:
-            q = alerts.parse_yahoo(fh.read(), "AAPL")
-        self.assertEqual(q["price"], 341.27)
-        self.assertEqual(q["prev_close"], 340.97)
-        self.assertEqual(q["time"], "2026-10-13T10:15:01Z")
-        with open(os.path.join(QDIR, "yahoo-TSLA.json")) as fh:
-            q = alerts.parse_yahoo(fh.read(), "TSLA")
-        self.assertEqual((q["price"], q["prev_close"], round(q["open"], 2)), (366.475, 354.72, 357.48))
-        self.assertEqual(q["time"], "2026-10-19T05:07:13Z")
+    def test_the_fixture_quotes(self):
+        q, errors = alerts.get_quotes(["AAPL", "TSLA"], QDIR)
+        self.assertEqual((q["AAPL"]["price"], q["AAPL"]["prev_close"]), (341.27, 340.97))
+        self.assertEqual(q["AAPL"]["time"], "2026-10-13T10:15:01Z")
+        self.assertEqual((q["TSLA"]["price"], q["TSLA"]["prev_close"], round(q["TSLA"]["open"], 2)),
+                         (366.475, 354.72, 357.48))
+        self.assertEqual(q["TSLA"]["time"], "2026-10-19T05:07:13Z")
 
-    def test_stooq_fixture(self):
-        with open(os.path.join(QDIR, "stooq-AAPL.csv")) as fh:
-            q = alerts.parse_stooq(fh.read(), "AAPL")
-        self.assertEqual(q["price"], 341.27)
-        self.assertEqual(q["open"], 344.67)
-        with open(os.path.join(QDIR, "stooq-ZZZZ.csv")) as fh:
-            with self.assertRaises(alerts.AlertError):
-                alerts.parse_stooq(fh.read(), "ZZZZ")
-
-    def test_urls_and_user_agent(self):
-        self.assertEqual(alerts.UA, UA)
-        self.assertEqual(alerts.stooq_url("BRK.B"), "https://stooq.com/q/l/?s=brk-b.us&f=sd2t2ohlcv&h&e=csv")
-        self.assertEqual(alerts.yahoo_url("brk.b"),
-                         "https://query2.finance.yahoo.com/v8/finance/chart/BRK-B?range=1d&interval=1d")
-        self.assertIn("//query1.finance.yahoo.com/", alerts.yahoo_url("TSLA", alerts.YAHOO_HOSTS[1]))
+    def test_symbols_are_nse_symbols(self):
+        self.assertEqual([nse.nse_symbol(s) for s in ("reliance", "TCS.NS", " m&m.ns ")], ["RELIANCE", "TCS", "M&M"])
+        q, _ = alerts.get_quotes(["reliance.ns"], QDIR)
+        self.assertEqual(list(q), ["RELIANCE"])
 
     def test_offline_quotes_and_errors(self):
-        q, errors = alerts.get_quotes(["AAPL", "KO", "ZZZZ", "NOPE"], "yahoo", QDIR)
+        q, errors = alerts.get_quotes(["AAPL", "KO", "ZZZZ", "NOPE"], QDIR)
         self.assertEqual(sorted(q), ["AAPL", "KO"])
         self.assertEqual(q["KO"]["price"], 90.11)
         self.assertEqual(len(errors), 2)
-        self.assertIn("No data found", errors[0])
+        self.assertIn("Symbol 'ZZZZ' not found", errors[0])
+        self.assertIn("no offline quote file", errors[1])
 
     def test_offline_gz(self):
         d = tempfile.mkdtemp()
         try:
-            with open(os.path.join(QDIR, "yahoo-TSLA.json"), "rb") as src:
-                with gzip.open(os.path.join(d, "yahoo-TSLA.json.gz"), "wb") as dst:
+            with open(os.path.join(QDIR, "nse-TSLA.json"), "rb") as src:
+                with gzip.open(os.path.join(d, "nse-TSLA.json.gz"), "wb") as dst:
                     dst.write(src.read())
-            q, errors = alerts.get_quotes(["TSLA"], "yahoo", d)
+            q, errors = alerts.get_quotes(["TSLA"], d)
             self.assertEqual((q["TSLA"]["price"], errors), (366.475, []))
         finally:
             shutil.rmtree(d)
 
 
-class FakeNet(object):
-    """Stands in for urllib: answers each request with the next status code."""
-
-    def __init__(self, codes, body=None):
-        self.codes, self.calls, self.sleeps = list(codes), [], []
-        with open(os.path.join(QDIR, "yahoo-TSLA.json")) as fh:
-            self.body = body or fh.read()
-
-    def urlopen(self, req, timeout=None):
-        self.calls.append((req.full_url.split("/")[2], req.get_header("User-agent")))
-        code = self.codes.pop(0)
-        if code != 200:
-            fp = io.BytesIO(b'{"chart":{"result":null,"error":{"code":"Not Found",'
-                            b'"description":"No data found, symbol may be delisted"}}}' if code == 404 else b"")
-            raise urllib.error.HTTPError(req.full_url, code, "x", {}, fp)
-        return io.BytesIO(self.body.encode("utf-8"))
+def fixture(sym):
+    with open(os.path.join(QDIR, "nse-%s.json" % sym)) as fh:
+        return json.load(fh)
 
 
-class Network(unittest.TestCase):
+class NseClient(unittest.TestCase):
+    """nse_data without the network: call_tools is swapped for a fake NSE."""
+
     def setUp(self):
-        self.saved = (alerts._urlopen, alerts._sleep)
+        self.saved = nse.call_tools
+        self.cache = tempfile.mkdtemp()
+        self.calls = []
 
     def tearDown(self):
-        alerts._urlopen, alerts._sleep = self.saved
+        nse.call_tools = self.saved
+        shutil.rmtree(self.cache)
 
-    def net(self, codes):
-        f = FakeNet(codes)
-        alerts._urlopen = f.urlopen
-        alerts._sleep = f.sleeps.append
-        return f
+    def nse_answers(self, answers):
+        """answers: {SYM: (ok, payload)} for cm_get_stock_quote; anything else: a timeout."""
+        def fake(url, calls, **kw):
+            self.calls.append((url, calls))
+            return [answers.get(args.get("symbol"), (False, "timed out after 45s")) for _, args in calls]
+        nse.call_tools = fake
 
-    def hosts(self, f):
-        return [h.split(".")[0] for h, _ in f.calls]
+    def test_live_quotes_go_to_the_official_server_one_call_a_symbol(self):
+        self.nse_answers({"RELIANCE": (True, fixture("RELIANCE")), "KO": (True, fixture("KO"))})
+        q, errors = nse.fetch_quotes(["RELIANCE", "ko.ns"], cache_dir=self.cache)
+        self.assertEqual((q["RELIANCE"]["price"], q["KO"]["price"], errors), (1377.5, 90.11, {}))
+        url, calls = self.calls[0]
+        self.assertEqual(url, "https://mcp.nseindia.in/cmmkt/mcp")
+        self.assertEqual(calls, [("cm_get_stock_quote", {"symbol": "RELIANCE"}), ("cm_get_stock_quote", {"symbol": "KO"})])
+        self.assertTrue(os.path.exists(os.path.join(self.cache, "quotes.csv")))
 
-    def test_query2_first_with_the_contract_user_agent(self):
-        f = self.net([200])
-        q, errors = alerts.get_quotes(["TSLA"])
-        self.assertEqual((q["TSLA"]["price"], errors), (366.475, []))
-        self.assertEqual(f.calls, [("query2.finance.yahoo.com", UA)])
+    def test_a_timeout_a_failure_or_an_empty_answer_goes_to_the_backup(self):
+        self.nse_answers({"RELIANCE": (True, fixture("RELIANCE")), "KO": (True, fixture("KO")),
+                          "AAPL": (True, fixture("AAPL"))})
+        nse.fetch_quotes(["RELIANCE", "KO", "AAPL"], cache_dir=self.cache)      # fills the cache
+        self.nse_answers({"KO": (False, "failed: connection reset"),
+                          "AAPL": (True, {"updatedAt": "x", "stock": None})})  # RELIANCE: timed out
+        q, errors = nse.fetch_quotes(["RELIANCE", "KO", "AAPL", "NEW"], cache_dir=self.cache)
+        self.assertEqual(sorted(q), ["AAPL", "KO", "RELIANCE"])
+        for s in ("RELIANCE", "KO", "AAPL"):
+            self.assertEqual(q[s]["source"], "cache", s)
+        self.assertEqual(q["RELIANCE"]["price"], 1377.5)
+        self.assertEqual(q["RELIANCE"]["time"], "2026-11-20T10:30:28Z")     # the original quote time: stale stays stale
+        self.assertEqual(list(errors), ["NEW"])
+        self.assertIn("timed out", errors["NEW"])
+        self.assertIn("backup: no cached quote", errors["NEW"])
 
-    def test_one_retry_with_a_pause_on_429(self):
-        f = self.net([429, 200])
-        self.assertEqual(alerts.get_quotes(["TSLA"])[0]["TSLA"]["price"], 366.475)
-        self.assertEqual(self.hosts(f), ["query2", "query2"])
-        self.assertEqual(f.sleeps, [alerts.BACKOFF])
+    def test_the_backup_hook_alone(self):
+        q, errors = nse.fetch_backup_data(["TCS"], "quotes", cache_dir=self.cache, reasons={"TCS": "timed out"})
+        self.assertEqual((q, errors), ({}, {"TCS": "timed out; backup: no cached quote"}))
+        with self.assertRaises(nse.NSEError):
+            nse.fetch_backup_data(["TCS"], "ticks", cache_dir=self.cache)
 
-    def test_falls_back_to_query1_on_429_and_5xx(self):
-        f = self.net([429, 429, 200])
-        self.assertIn("TSLA", alerts.get_quotes(["TSLA"])[0])
-        self.assertEqual(self.hosts(f), ["query2", "query2", "query1"])
-        f = self.net([503, 200])
-        self.assertIn("TSLA", alerts.get_quotes(["TSLA"])[0])
-        self.assertEqual(self.hosts(f), ["query2", "query1"])
-        f = self.net([500, 502])
-        q, errors = alerts.get_quotes(["TSLA"])
-        self.assertEqual(q, {})
-        self.assertIn("query1.finance.yahoo.com/v8/finance/chart/TSLA answered HTTP 502", errors[0])
+    def test_nse_error_answers_are_failures(self):
+        class R(object):
+            def __init__(self, text, err=False):
+                self.content = [type("C", (), {"text": text})()] if text is not None else []
+                self.is_error = err
+        self.assertEqual(nse._payload(R('{"stock": {"symbol": "TCS"}}')), {"stock": {"symbol": "TCS"}})
+        for r, words in ((R('{"error": "Symbol \'X\' not found"}'), "not found"), (R(""), "empty"),
+                         (R(None), "empty"), (R("{}"), "empty"), (R("boom", True), "NSE error"),
+                         (R("<html>"), "not JSON")):
+            with self.assertRaises(nse.NSEError) as cm:
+                nse._payload(r)
+            self.assertIn(words, str(cm.exception))
 
-    def test_a_404_is_yahoos_answer_and_a_403_is_not_retried(self):
-        f = self.net([404])
-        q, errors = alerts.get_quotes(["NOPE"])
-        self.assertIn("No data found", errors[0])
-        self.assertEqual(self.hosts(f), ["query2"])
-        f = self.net([403])
-        q, errors = alerts.get_quotes(["TSLA"])
-        self.assertIn("HTTP 403", errors[0])
-        self.assertEqual(self.hosts(f), ["query2"])
-
-    def test_a_pause_between_tickers(self):
-        f = self.net([200, 200])
-        alerts.get_quotes(["TSLA", "AAPL"])
-        self.assertEqual(f.sleeps, [alerts.PAUSE])
+    def test_no_sdk_or_no_server_fails_every_call_with_the_reason(self):
+        res = nse.call_tools("https://127.0.0.1:9/mcp", [("cm_get_stock_quote", {"symbol": "TCS"})] * 2,
+                             timeout=5, session_timeout=10)
+        self.assertEqual(len(res), 2)
+        self.assertFalse(res[0][0])
+        self.assertTrue(res[0][1].startswith(("could not reach NSE", "timed out", "the mcp SDK")), res[0][1])
 
 
 class Rules(unittest.TestCase):
     def setUp(self):
-        self.q, _ = alerts.get_quotes(["AAPL", "BAC", "KO", "TSLA"], "yahoo", QDIR)
+        self.q, _ = alerts.get_quotes(["AAPL", "BAC", "KO", "TSLA"], QDIR)
         self.open = alerts.market_status(ist("2026-10-13T10:00"))
         self.now = ist("2026-10-13T10:00")
 

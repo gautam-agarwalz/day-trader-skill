@@ -1,0 +1,18 @@
+{
+ "updatedAt": "2026-10-13T10:15:01Z",
+ "stock": {
+  "type": "CM",
+  "symbol": "GOOGL",
+  "series": "EQ",
+  "openPrice": 356.2300109863281,
+  "highPrice": 358.58,
+  "lowPrice": 351.6,
+  "preClosePrice": 352.72,
+  "lastTradedPrice": 353.78,
+  "indicativeClosePrice": 0.0,
+  "change": 1.06,
+  "perChange": 0.3,
+  "volume": 22270289,
+  "latestTimestamp": "2026-10-13 15:45:01"
+ }
+}

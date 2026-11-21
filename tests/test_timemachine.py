@@ -473,8 +473,8 @@ class Network(unittest.TestCase):
 
     def test_url_and_user_agent(self):
         self.assertEqual(tm.chart_url("tsla"),
-                         "https://query2.finance.yahoo.com/v8/finance/chart/TSLA?range=60d&interval=5m")
-        self.assertIn("/chart/BRK-B?", tm.chart_url("brk.b", "query1"))
+                         "https://query2.finance.yahoo.com/v8/finance/chart/TSLA.NS?range=60d&interval=5m")
+        self.assertIn("/chart/TCS.NS?", tm.chart_url("tcs", "query1"))           # a bare NSE symbol
         self.assertIn("/chart/RELIANCE.NS?", tm.chart_url("reliance.ns"))
         self.assertIn("/chart/M%26M.NS?", tm.chart_url("M&M.NS"))
         self.assertEqual(tm.normalize_plan(dict(PLAN, symbol="bajaj-auto.ns"))["symbol"], "BAJAJ-AUTO.NS")

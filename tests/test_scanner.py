@@ -6,6 +6,7 @@ import shutil
 import tempfile
 import unittest
 import urllib.error
+import urllib.parse
 from contextlib import redirect_stdout, redirect_stderr
 
 from _load import load, FIX
@@ -14,9 +15,11 @@ scan = load("trader-scanner", "scan")
 
 SDIR = os.path.join(FIX, "trader-scanner")
 WALL = os.path.join(SDIR, "wall5m-2026-10-19.json.gz")       # 234 real 5-min charts, Oct 19 2026
-DAILY = os.path.join(SDIR, "daily-spark-2026-10-19.json")    # 19 real daily charts as one spark answer
+# 19 real daily charts (closes, through Mon Oct 19 2026, today's bar in progress) in the shape of
+# NSE's get_stock_history answer, as a bundle {SYM: answer}; converted from the reel's spark answer
+DAILY = os.path.join(SDIR, "daily-nse-2026-10-19.json")
 LIVE = os.path.join(SDIR, "spark-3mo-live-2026-10-20.json")  # a real 20-symbol spark answer
-SYMDIR = os.path.join(SDIR, "symdir")                        # trimmed Nasdaq Trader files of Oct 19
+EQUITY = os.path.join(SDIR, "nse-equity")   # real cm_get_equity_stocks answers (RELI, TCS, INFY, M&M, BAJAJ), Nov 21
 # The Yahoo bar fixtures are real US bars re-timed into the NSE session (9:30 New York -> 9:15 IST, same
 # prices). The two live 5-minute files were fetched Tue Oct 20 at 10:01:47 AM New York; Oct 20 is an NSE
 # holiday (Dussehra), so they were moved to Wed Oct 21, 9:46:47 AM IST.
@@ -57,62 +60,58 @@ def bars_series(day, closes, highs=None, lows=None, start="09:15", extra=None):
 
 class Universe(unittest.TestCase):
     def setUp(self):
-        texts = {}
-        for f in scan.NASDAQ_FILES:
-            with open(os.path.join(SYMDIR, f), encoding="utf-8") as fh:
-                texts[f] = fh.read()
-        self.kept, self.counts, self.created = scan.build_universe(texts)
-        self.rows = {}
-        for f in scan.NASDAQ_FILES:
-            rows, _ = scan.parse_symdir(texts[f])
-            for r in rows:
-                self.rows[(r.get("Symbol") or r.get("ACT Symbol"))] = r
+        self.docs = scan.load_equity_offline(EQUITY)
 
-    def why(self, sym):
-        return scan.classify(self.rows[sym])
+    def test_series_eq_only_no_suffix(self):
+        rows = scan.build_universe(self.docs)
+        self.assertEqual([r["symbol"] for r in rows],
+                         ["BAJAJ-AUTO", "BAJAJCON", "BAJAJELEC", "BAJAJFINSV", "BAJAJHCARE", "BAJAJHFL", "BAJAJHIND",
+                          "BAJAJHLDNG", "BAJAJINDEF", "BAJAJST", "INFY", "M&M", "M&MFIN", "RELIABLE", "RELIANCE",
+                          "RELIGARE", "TCS"])                      # RELINFRA is series BE: out
+        rel = [r for r in rows if r["symbol"] == "RELIANCE"][0]
+        self.assertEqual((rel["series"], rel["price"]), ("EQ", 1377.5))
+        self.assertEqual(len(scan.build_universe(self.docs, series=("EQ", "BE"))), 18)
 
-    def test_the_kept_list(self):
-        self.assertEqual([s for s, _ in self.kept],
-                         ["A", "AACG", "AACI", "AAPL", "AME", "AMX", "ARLP", "BEP", "BF.B", "BRK.B", "IRS",
-                          "KO", "OBAI", "ORGO", "PFBC", "PRT", "TSLA"])
-        self.assertEqual(self.counts["rows"], 36)
-        self.assertEqual(self.created, "2026-10-19 10:01")   # Nasdaq Trader's own file stamp
-        self.assertEqual(dict(self.kept)["TSLA"], "Tesla, Inc. - Common Stock")
+    def test_not_an_equity_list(self):
+        d = tempfile.mkdtemp()
+        try:
+            bad = os.path.join(d, "x.json")
+            with open(bad, "w") as fh:
+                json.dump({"stock": {}}, fh)
+            with self.assertRaises(scan.ScanError):
+                scan.load_equity_offline(bad)
+        finally:
+            shutil.rmtree(d)
 
-    def test_one_case_per_rule(self):
-        cases = {
-            "ZAZZT": "test issue", "ZZZTX": "test issue",           # 1. test issues
-            "AAAP": "ETF", "SPY": "ETF",                            # 1. ETFs
-            "ABR$D": "not a plain ticker",                          # 2. $ preferred
-            "AAC.U": "unit / warrant / right suffix",               # 2. .U unit
-            "AAC.W": "unit / warrant / right suffix",               # 2. .W warrant
-            "AACIW": "warrant",                                     # 3. warrants
-            "HAVAR": "unit or right",                               # 3. SPAC rights "Rights that convert..."
-            "ATMP": "note",                                         # 3. an ETN with the ETF flag at N
-            "GJH": "coupon", "EAI": "coupon",                       # 3. a % coupon (bonds too)
-            "CDZIP": "depositary",                                  # 3. depositary shares that carry a preferred
-            "AACIU": "unit", "ARCIU": "unit",                       # 5. "- Units", "- Unit"
-            "AACPR": "right", "GENVR": "right",                     # 5. rights, contingent value rights
-            "BHK": "bond",                                          # 5. a bond fund with no share wording
-            "CHTRP": "preferred",                                   # 5. preferred stock
-            "AAPL": "keep", "AACI": "keep", "AACG": "keep",         # 4. common, ordinary, ADS
-            "PFBC": "keep", "OBAI": "keep",                         # 4. "Preferred Bank", "Our Bond": common stock
-            "AMX": "keep", "IRS": "keep",                           # 4. ADS "the right to receive", Global depositary
-            "ARLP": "keep", "BEP": "keep", "PRT": "keep",           # 4. partnership and trust units
-            "BRK.B": "keep", "BF.B": "keep",                        # 2. one class letter after a dot
-            "AME": "keep", "ORGO": "keep",                          # 6. plain names
-        }
-        for sym, want in cases.items():
-            self.assertEqual(self.why(sym), want, sym)
+    def test_the_live_list_is_paged_by_prefix(self):
+        """A full page (500) is split into longer prefixes; NSE is never asked for more than a page."""
+        saved = scan.nse_data.call_tools
+        asked = []
 
-    def test_nextshares_rule(self):
-        row = {"Symbol": "ZXYZ", "Security Name": "Some Fund - NextShares", "Test Issue": "N",
-               "ETF": "N", "NextShares": "Y"}
-        self.assertEqual(scan.classify(row), "NextShares")
-
-    def test_not_a_symbol_file(self):
-        with self.assertRaises(scan.ScanError):
-            scan.parse_symdir("<html>maintenance</html>")
+        def fake(url, calls, **kw):
+            out = []
+            for _, args in calls:
+                p = args["symbolFilter"]
+                asked.append(p)
+                if p == "S":
+                    out.append((True, {"segment": "EQUITY", "stocks": [{"symbol": "S%03d" % i, "series": "EQ"}
+                                                                       for i in range(500)]}))
+                elif p.startswith("S") and p[1:] in ("A", "B"):
+                    out.append((True, {"segment": "EQUITY", "stocks": [{"symbol": p + "X", "series": "EQ"},
+                                                                       {"symbol": p + "Y", "series": "BE"}]}))
+                elif p == "R":
+                    out.append((True, {"segment": "EQUITY", "stocks": [{"symbol": "RELIANCE", "series": "EQ"}]}))
+                else:
+                    out.append((False, "Symbol not found"))
+            return out
+        scan.nse_data.call_tools = fake
+        try:
+            rows = scan.nse_data.fetch_equity_list()
+        finally:
+            scan.nse_data.call_tools = saved
+        self.assertEqual([r["symbol"] for r in rows], ["RELIANCE", "SAX", "SBX"])
+        self.assertIn("SA", asked)
+        self.assertNotIn("RA", asked)
 
 
 class Time(unittest.TestCase):
@@ -134,11 +133,11 @@ class Spark(unittest.TestCase):
     def test_a_real_spark_answer(self):
         with open(LIVE, encoding="utf-8") as fh:
             text = fh.read()
-        wanted = {scan.to_yahoo(s): s for s in ["AAPL", "TSLA", "BRK.B", "ZZZZQX"]}
+        wanted = {scan.to_yahoo(s): s for s in ["AAPL", "TSLA", "BRK-B", "ZZZZQX"]}
         data = scan.parse_spark(text, wanted)
         self.assertEqual(len(data), 19)            # 20 asked; Yahoo silently drops the made-up ZZZZQX
         self.assertNotIn("ZZZZQX", data)
-        self.assertIn("BRK.B", data)               # BRK-B comes back as ours
+        self.assertIn("BRK-B", data)               # a bare symbol answered without .NS comes back as itself
         t = data["TSLA"]
         self.assertEqual(len(t["t"]), 65)
         self.assertIsNone(t["h"])                  # spark is closes only
@@ -162,9 +161,10 @@ class Spark(unittest.TestCase):
             scan.parse_spark('{"chart":{}}')
 
     def test_urls(self):
-        self.assertEqual(scan.spark_path(["BRK.B", "tsla"], "3mo", "1d"),
-                         "/v7/finance/spark?symbols=BRK-B,TSLA&range=3mo&interval=1d")
-        self.assertEqual(scan.chart_path("TSLA", "1d", "5m"), "/v8/finance/chart/TSLA?range=1d&interval=5m")
+        # the orb scan's 5-minute bars still come from Yahoo: a bare NSE symbol is sent as SYM.NS
+        self.assertEqual(scan.spark_path(["RELIANCE", "tcs.ns"], "1d", "5m"),
+                         "/v7/finance/spark?symbols=RELIANCE.NS,TCS.NS&range=1d&interval=5m")
+        self.assertEqual(scan.chart_path("TSLA", "1d", "5m"), "/v8/finance/chart/TSLA.NS?range=1d&interval=5m")
         self.assertEqual(scan.spark_path(["reliance.ns", "M&M.NS"], "1d", "5m"),
                          "/v7/finance/spark?symbols=RELIANCE.NS,M%26M.NS&range=1d&interval=5m")
         self.assertEqual(scan.chart_path("TCS.NS", "1d", "5m"), "/v8/finance/chart/TCS.NS?range=1d&interval=5m")
@@ -210,7 +210,7 @@ class Network(unittest.TestCase):
 
     def test_429_for_good_is_reported_as_partial(self):
         self.answers([200] + [429] * 10)
-        syms = ["AAPL", "TSLA", "NVDA", "BRK.B", "AMC", "ZZZZQX", "MSFT", "AMZN", "META", "GOOGL", "PLTR", "AMD",
+        syms = ["AAPL", "TSLA", "NVDA", "BRK-B", "AMC", "ZZZZQX", "MSFT", "AMZN", "META", "GOOGL", "PLTR", "AMD",
                 "INTC", "F", "BAC", "KO", "PLUG", "SOFI", "RIVN", "LCID"] + ["X%02d" % i for i in range(20)]
         data, failed = scan.fetch_spark(syms, "3mo", "1d", 0.3)
         self.assertEqual(len(data), 19)
@@ -221,6 +221,38 @@ class Network(unittest.TestCase):
         hits, counts, _ = scan.scan_daily(data, syms, scan.parse_now("2026-10-20 08:59"), 5, 1000000)
         self.assertEqual(counts["requested"], 40)
         self.assertEqual(counts["fetched"], 19)
+
+    def test_daily_bars_from_nse_and_the_backup(self):
+        saved = scan.nse_data.call_tools
+        cache = tempfile.mkdtemp()
+        with open(DAILY, encoding="utf-8") as fh:
+            bundle = json.load(fh)
+        calls = []
+
+        def nse_ok(url, batch, **kw):
+            calls.append((url, batch))
+            return [(True, bundle[a["symbol"]]) if a["symbol"] in bundle else (False, "Symbol not found: %s" % a["symbol"])
+                    for _, a in batch]
+
+        def nse_down(url, batch, **kw):
+            return [(False, "timed out after 20s")] * len(batch)
+        try:
+            scan.nse_data.call_tools = nse_ok
+            data, errors = scan.nse_data.fetch_daily(["KO", "TSLA", "NOPE"], months=3, cache_dir=cache)
+            self.assertEqual(calls[0][0], "https://mcp.nseindia.in/bhavcopy/cm/mcp")
+            self.assertEqual(calls[0][1][0], ("get_stock_history", {"symbol": "KO", "months": 3, "endDate": "today"}))
+            self.assertEqual((sorted(data), data["KO"]["meta"]["source"]), (["KO", "TSLA"], "nse"))
+            self.assertIn("Symbol not found: NOPE; backup: no cached daily bars", errors["NOPE"])
+            scan.nse_data.call_tools = nse_down
+            again, errors = scan.nse_data.fetch_daily(["KO", "TSLA"], months=3, cache_dir=cache)
+            self.assertEqual(errors, {})
+            self.assertEqual(again["KO"]["meta"]["source"], "cache")
+            self.assertEqual(again["KO"]["c"], data["KO"]["c"])
+            now = scan.parse_now("2026-10-19 08:45")
+            self.assertEqual(scan.scan_daily(again, ["KO"], now, 0, 0)[0], scan.scan_daily(data, ["KO"], now, 0, 0)[0])
+        finally:
+            scan.nse_data.call_tools = saved
+            shutil.rmtree(cache)
 
     def test_a_404_is_final(self):
         self.answers([404])
@@ -451,7 +483,7 @@ class LiveFiveMinute(unittest.TestCase):
 
     def test_in_progress_bar_and_live_tick_are_dropped(self):
         self.assertEqual(len(self.spark), 20)
-        self.assertIn("BRK.B", self.spark)
+        self.assertIn("BRK-B", self.spark)
         t = self.spark["TSLA"]
         self.assertEqual(len(t["t"]), 8)                   # 9:15 ... 09:45 (in progress) + the 09:46:47 tick
         self.assertEqual(scan.ts_to_ist(t["t"][-1]), DT(2026, 10, 21, 9, 46, 47))
@@ -505,21 +537,25 @@ class Cli(unittest.TestCase):
 
     def test_universe_daily_orb_end_to_end(self):
         uni = os.path.join(self.t, "universe.txt")
-        code, text, _ = run(["universe", "--offline", SYMDIR, "--out", uni])
+        code, text, _ = run(["universe", "--offline", EQUITY, "--out", uni])
         self.assertEqual(code, 0)
-        self.assertIn("Kept 17 US-listed", text)
+        self.assertIn("NSE capital-market equities, series EQ: 17 symbols", text)
         with open(uni, encoding="utf-8") as fh:
-            lines = fh.read().splitlines()
+            lines = [ln for ln in fh.read().splitlines() if not ln.startswith("#")]
         self.assertEqual(len(lines), 17)
-        self.assertIn("BRK.B|Berkshire Hathaway Inc. New Common Stock", lines)
+        self.assertIn("RELIANCE", lines)
+        self.assertIn("M&M", lines)                               # NSE symbols, no .NS suffix
+        self.assertEqual(scan.symbols_from_file(uni)[:2], ["BAJAJ-AUTO", "BAJAJCON"])
 
-        # daily over that universe with the fixture charts: only KO and TSLA are in both, so partial
+        # daily over that universe plus two names of the fixture charts: only KO and TSLA have charts
+        with open(uni, "a", encoding="utf-8") as fh:
+            fh.write("KO\nTSLA.NS\n")
         code, text, _ = run(["daily", "--universe", uni, "--offline", DAILY, "--now", "2026-10-19 08:45",
                              "--out", self.wl, "--min-volume", "0"])
         self.assertEqual(code, 0)
-        self.assertIn("Fetched 2 of 17 charts (15 failed or had no data)", text)
+        self.assertIn("Fetched 2 of 19 charts (17 failed or had no data)", text)
         doc = self.read(self.wl)
-        self.assertEqual((doc["mode"], doc["universe"], doc["scanned"], doc["failed"]), ("daily", 17, 2, 15))
+        self.assertEqual((doc["mode"], doc["universe"], doc["scanned"], doc["failed"]), ("daily", 19, 2, 17))
         self.assertEqual(doc["hits"], [{"symbol": "KO", "setups": ["breakout_20d"], "price": 93.9,
                                         "close_date": "2026-10-16", "rsi": 75.3, "volume": 3680307}])
         self.assertEqual(doc["as_of"], "2026-10-16 close")
@@ -557,12 +593,12 @@ class Cli(unittest.TestCase):
             if path.startswith("/v7/finance/spark"):
                 res = []
                 for y in path.split("symbols=")[1].split("&")[0].split(","):
-                    r = ((bundle.get(y.replace("-", ".")) or {}).get("chart") or {}).get("result")
+                    r = ((bundle.get(scan.nse_data.nse_symbol(y)) or {}).get("chart") or {}).get("result")
                     if r:
                         closes = r[0]["indicators"]["quote"][0].get("close", [])
                         res.append({"symbol": y, "response": [dict(r[0], indicators={"quote": [{"close": closes}]})]})
                 return json.dumps({"spark": {"result": res, "error": None}})
-            return json.dumps(bundle[path.split("/chart/")[1].split("?")[0].replace("-", ".")])
+            return json.dumps(bundle[scan.nse_data.nse_symbol(urllib.parse.unquote(path.split("/chart/")[1].split("?")[0]))])
         old_get, old_sleep, real_now = scan.yahoo_get, scan.SLEEP, scan.parse_now
         scan.yahoo_get, scan.SLEEP = get, (lambda s: None)
         scan.parse_now = lambda text: real_now(text or "2026-10-19 10:05")  # the machine clock, pinned

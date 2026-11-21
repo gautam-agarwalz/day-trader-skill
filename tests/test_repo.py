@@ -40,7 +40,7 @@ class Repo(unittest.TestCase):
 
     def test_root_matches_the_reel(self):
         root = sorted(d for d in os.listdir(ROOT) if not d.startswith(".git"))
-        self.assertEqual(root, sorted([".claude-plugin", "LICENSE", "README.md", "tests"] + SKILLS))
+        self.assertEqual(root, sorted([".claude-plugin", "LICENSE", "README.md", "requirements.txt", "tests"] + SKILLS))
 
     def test_frontmatter_name_and_description(self):
         for s in SKILLS:
@@ -100,8 +100,8 @@ class Repo(unittest.TestCase):
             for old in V1_ONLY:
                 self.assertNotIn(old, text, rel)
 
-    def test_every_tool_runs_on_python_3_8(self):
-        # no 3.9+ only modules or syntax in the tools (the README promises 3.8)
+    def test_every_tool_runs_on_python_3_10(self):
+        # requirements.txt: Python 3.10+ (the mcp SDK's floor); no 3.11+ only modules or syntax
         for s in SKILLS:
             folder = os.path.join(ROOT, s)
             for f in os.listdir(folder):
@@ -109,13 +109,32 @@ class Repo(unittest.TestCase):
                     continue
                 with open(os.path.join(folder, f), encoding="utf-8") as fh:
                     src = fh.read()
-                for bad in ("import zoneinfo", "from zoneinfo", ".removeprefix(", ".removesuffix(",
-                            "match ", "list[", "dict[", "tuple["):
-                    if bad == "match ":
-                        self.assertNotRegex(src, r"(?m)^\s+match \w+.*:$", "%s/%s" % (s, f))
-                    elif bad.endswith("["):
-                        self.assertNotRegex(src, r"(?<![\w.])%s" % re.escape(bad), "%s/%s" % (s, f))
-                    else:
+                for bad in ("import tomllib", "from typing import Self", "except*", "asyncio.TaskGroup",
+                            "asyncio.timeout("):
+                    self.assertNotIn(bad, src, "%s/%s" % (s, f))
+
+    def test_requirements(self):
+        with open(os.path.join(ROOT, "requirements.txt"), encoding="utf-8") as fh:
+            reqs = [ln.split("#")[0].strip() for ln in fh if ln.split("#")[0].strip()]
+        self.assertEqual(reqs, ["mcp>=2.3,<3"])
+
+    def test_one_nse_data_layer_shared_by_scanner_and_alerts(self):
+        with open(os.path.join(ROOT, "trader-scanner", "nse_data.py"), encoding="utf-8") as fh:
+            a = fh.read()
+        with open(os.path.join(ROOT, "trader-alerts", "nse_data.py"), encoding="utf-8") as fh:
+            b = fh.read()
+        self.assertEqual(a, b, "copy trader-scanner/nse_data.py over trader-alerts/nse_data.py")
+        self.assertIn("def fetch_backup_data(", a)
+        self.assertIn("# TODO: Plug in Angel One SmartAPI or TradingView backup here", a)
+
+    def test_no_yfinance_or_stooq(self):
+        for s in SKILLS:
+            folder = os.path.join(ROOT, s)
+            for f in os.listdir(folder):
+                if f.endswith(".py"):
+                    with open(os.path.join(folder, f), encoding="utf-8") as fh:
+                        src = fh.read().lower()
+                    for bad in ("yfinance", "stooq", "pandas_datareader", "nasdaqtrader"):
                         self.assertNotIn(bad, src, "%s/%s" % (s, f))
 
     def test_day_trading_limits_ship_in_the_example_config(self):

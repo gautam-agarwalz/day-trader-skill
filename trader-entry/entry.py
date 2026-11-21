@@ -203,9 +203,14 @@ def next_open(d):
 # ---------------------------------------------------------------- Yahoo
 
 def yahoo_symbol(sym):
-    """Yahoo's spelling: BRK.B -> BRK-B. An NSE symbol keeps its .NS suffix (RELIANCE.NS)."""
-    s = sym.upper()
-    return s if s.endswith(".NS") else s.replace(".", "-")
+    """Yahoo's spelling of an NSE symbol: RELIANCE -> RELIANCE.NS (a .NS suffix is kept as it is)."""
+    return nse_base(sym) + ".NS"
+
+
+def nse_base(sym):
+    """RELIANCE.NS or reliance -> RELIANCE."""
+    s = str(sym or "").strip().upper()
+    return s[:-3] if s.endswith(".NS") else s
 
 
 def chart_path(sym, rng, interval):
@@ -341,7 +346,7 @@ def get_chart(sym, interval, day=None, offline=None, today=None):
         today = today or to_ist(utc_now()).date()
         text = yahoo_get(chart_path(sym, chart_range(day or today, today, interval), interval))
     ch = parse_chart(text, sym)
-    if ch["symbol"] != yahoo_symbol(sym):
+    if nse_base(ch["symbol"]) != nse_base(sym):
         raise EntryError("the chart file holds %s, not %s" % (ch["symbol"], sym))
     gran = ch["meta"].get("dataGranularity")
     if gran and gran != interval:

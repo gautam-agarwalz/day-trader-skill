@@ -1,0 +1,22 @@
+{
+ "updatedAt": "2026-11-21T17:53:11.475095666Z",
+ "stock": {
+  "type": "CM",
+  "symbol": "RELIANCE",
+  "series": "EQ",
+  "openPrice": 1369.0,
+  "highPrice": 1383.0,
+  "lowPrice": 1356.1,
+  "preClosePrice": 1375.6,
+  "lastTradedPrice": 1377.5,
+  "indicativeClosePrice": 0.0,
+  "change": 1.9,
+  "perChange": 0.14,
+  "volume": 13167730,
+  "value": 1799.8970137,
+  "fiftyTwoWeekHigh": 1611.8,
+  "fiftyTwoWeekLow": 1152.2,
+  "perChange30d": 14.6,
+  "latestTimestamp": "2026-11-20 16:00:28"
+ }
+}

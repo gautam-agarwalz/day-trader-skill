@@ -1,44 +1,38 @@
 #!/usr/bin/env python3
-"""Chart Scanner for trader-scanner: scan thousands of charts for setups. Standard library only.
+"""Chart Scanner for trader-scanner: scan thousands of NSE charts for setups.
 
-    python3 scan.py universe                          # Nasdaq Trader lists -> trader/universe.txt
+    python3 scan.py universe                          # NSE equity list -> trader/universe.txt
     python3 scan.py daily                             # before the open: daily setups -> trader/watchlist.json
-    python3 scan.py daily --symbols TSLA,NVDA,AMD     # or --watchlist FILE, or --limit 200
+    python3 scan.py daily --symbols RELIANCE,TCS,INFY # or --watchlist FILE, or --limit 200
     python3 scan.py orb                               # after 9:35 AM IST: opening-range breakouts so far
     python3 scan.py orb --at 10:15 --or-minutes 15    # cut the clock at 10:15 AM IST
     python3 scan.py orb --offline wall5m.json.gz --now "2026-10-19 10:15" --min-price 0
 
-universe  Downloads Nasdaq Trader's symbol directories (nasdaqlisted.txt and
-          otherlisted.txt) and keeps US-listed common stocks, ordinary shares
-          and ADRs. The rule, in order:
-            1. not a test issue, not an ETF, not NextShares
-            2. a plain ticker: 1 to 5 letters, or 1 to 4 letters plus one
-               class letter after a dot (BRK.B); a .U / .W / .R suffix
-               (units, warrants, rights) is out, and so is a $ preferred
-            3. out, whatever else the name says: warrants; SPAC units and
-               rights ("Units, each consisting of", "Rights to receive");
-               notes, ETNs, debentures; a % coupon; "Depositary Shares" that
-               are not American or Global (those carry a preferred)
-            4. in: the name calls it common stock / shares / units, ordinary
-               shares, shares of beneficial interest, ADS / ADR / American or
-               Global depositary shares, or partnership / trust units
-            5. out: the name still says unit, right, bond, preferred or preference
-            6. in: everything else (plain names like "AMETEK, Inc.")
+Symbols are NSE's own, without a suffix: RELIANCE, TCS, M&M (a ".NS" suffix is accepted).
 
-daily     Pre-market scan of daily CLOSES (Yahoo spark: 20 symbols a request,
-          3 months of 1-day bars, closes only). Liquidity from the spark meta:
-          regularMarketPrice >= --min-price (5) and regularMarketVolume >=
-          --min-volume (1,000,000). Setups, from closes only:
+universe  Every NSE capital-market equity symbol in series EQ, from NSE's official
+          CM Market Live MCP server (cm_get_equity_stocks), written one a line.
+          daily and orb build it the same way on their first run when there is
+          no universe file yet.
+
+daily     Pre-market scan of daily CLOSES: 3 months of daily OHLCV per symbol from
+          NSE's official CM Bhavcopy MCP server (get_stock_history). Liquidity from
+          the last session: close >= --min-price (5) and volume >= --min-volume
+          (1,000,000). Setups, from closes only:
             breakout_20d     the last close is above every close of the 20 before it
             bull_flag        up more than 10 % over the 10 sessions before the
                              last 5, then the last 5 closes inside a 5 % range
             reclaim_ma20     closed under the 20-day average, then closed above it
             oversold         RSI 14 (Wilder) under 30
             oversold_bounce  RSI 14 was under 30 yesterday and today closed up
-          Today's daily bar is dropped until the session's close.
+          Today's daily bar is dropped until the session's close. A symbol NSE
+          cannot serve (time out, failure, empty answer) goes to the backup hook,
+          nse_data.fetch_backup_data(): today the local CSV cache in trader/cache/.
 
-orb       Opening-range breakouts, 5-minute bars. The range is the first
-          --or-minutes (15) of the session. Stage 1: spark closes for every
+orb       Opening-range breakouts, 5-minute bars. NSE's MCP servers have no
+          intraday bars, so these still come from Yahoo (RELIANCE -> RELIANCE.NS)
+          until a backup provider with intraday candles is plugged in. The range is
+          the first --or-minutes (15) of the session. Stage 1: spark closes for every
           symbol (1 day of 5-minute bars, 20 a request); a chart goes on only
           if a completed bar after the range closed at or above the highest
           close of the range (a necessary condition). Stage 2: each candidate's
@@ -55,14 +49,17 @@ like 10:49:45) is dropped, and a bar counts only once it is complete
 (start + 5 minutes <= the clock). Times are India time (IST, UTC+5:30). --now pins the
 clock ("2026-10-19 10:15", India time; ...Z for UTC).
 
-Yahoo's endpoints are free, unofficial and can lag. query2 first, query1 on
-a 429 or 5xx, one retry after a pause on a 429. A polite pause between
-requests (--pause). Partial results are reported as partial.
+NSE's MCP servers are called with the official mcp Python SDK (pip install -r
+requirements.txt): plain tool calls, no language model. Yahoo (orb only) is
+free, unofficial and can lag: query2 first, query1 on a 429 or 5xx, one retry
+after a pause on a 429, a polite pause between requests (--pause). Partial
+results are reported as partial.
 
---offline PATH reads files instead of the network: universe wants a folder
-with nasdaqlisted.txt and otherlisted.txt; daily and orb take a folder of
-<T>.json v8 chart files or spark responses, or one file that is a spark
-response, a v8 chart, or a bundle {"TSLA": <v8 json>, ...}. .json.gz is fine.
+--offline PATH reads files instead of the network: universe takes a file or a
+folder of cm_get_equity_stocks answers; daily takes a bundle {"TCS": <the
+get_stock_history answer>, ...} or a folder of <SYM>.json answers; orb takes a
+folder of <T>.json v8 chart files or spark responses, or one file that is a
+spark response, a v8 chart, or a bundle {"TSLA": <v8 json>, ...}. .json.gz is fine.
 
 A scan is a list of charts that match a rule, not a list of stocks to buy.
 Exit code 0 when the scan found something, 1 when it did not or could not run.
@@ -80,10 +77,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import nse_data  # noqa: E402  (NSE's official MCP servers + the backup hook; this folder)
+
 UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Jakeschincariol/day-trader-skill)"
 YAHOO_HOSTS = ("https://query2.finance.yahoo.com", "https://query1.finance.yahoo.com")
-NASDAQ_FILES = ("nasdaqlisted.txt", "otherlisted.txt")
-NASDAQ_URL = "https://www.nasdaqtrader.com/dynamic/SymDir/"
 SPARK_MAX = 20      # Yahoo's spark answers 400 above 20 symbols
 PAUSE = 0.3         # seconds between requests: be polite to free endpoints
 BACKOFF = 5.0       # seconds to wait before the one retry after a 429
@@ -243,9 +241,8 @@ def yahoo_get(path):
 
 
 def to_yahoo(sym):
-    """Yahoo's spelling: BRK.B -> BRK-B. An NSE symbol keeps its .NS suffix (RELIANCE.NS)."""
-    s = sym.upper()
-    return s if s.endswith(".NS") else s.replace(".", "-")
+    """Yahoo's spelling of an NSE symbol: RELIANCE -> RELIANCE.NS (a .NS suffix is kept as it is)."""
+    return nse_data.nse_symbol(sym) + ".NS"
 
 
 def spark_path(symbols, rng, interval):
@@ -274,7 +271,7 @@ def series_from_result(res):
 
 def parse_spark(text_or_doc, wanted=None):
     """Spark JSON -> {SYM: series}. Symbols Yahoo does not know are simply missing
-    from the answer. `wanted` maps Yahoo symbols back to ours (BRK-B -> BRK.B)."""
+    from the answer. `wanted` maps Yahoo symbols back to ours (RELIANCE.NS -> RELIANCE)."""
     doc = json.loads(text_or_doc) if isinstance(text_or_doc, str) else text_or_doc
     sp = (doc or {}).get("spark") if isinstance(doc, dict) else None
     if not isinstance(sp, dict):
@@ -286,7 +283,7 @@ def parse_spark(text_or_doc, wanted=None):
         if not resp:
             continue
         ysym = item.get("symbol") or (resp[0].get("meta") or {}).get("symbol") or ""
-        sym = (wanted or {}).get(ysym.upper(), ysym.upper().replace("-", "."))
+        sym = (wanted or {}).get(ysym.upper(), nse_data.nse_symbol(ysym))
         out[sym] = series_from_result(resp[0])
     if err and not out:
         raise ScanError("Yahoo spark: %s" % (err.get("description") or err.get("code") or err))
@@ -324,7 +321,13 @@ def _stem(name):
 
 def _absorb(doc, name_hint, data, errors):
     """One parsed offline JSON doc -> data / errors."""
-    if isinstance(doc, dict) and "spark" in doc:
+    if nse_data.is_history(doc):
+        sym = nse_data.nse_symbol(name_hint or doc.get("symbol") or "")
+        try:
+            data[sym] = nse_data.parse_history(doc, sym)
+        except nse_data.NSEError as e:
+            errors[sym] = str(e)
+    elif isinstance(doc, dict) and "spark" in doc:
         data.update(parse_spark(doc))
     elif isinstance(doc, dict) and "chart" in doc:
         sym = name_hint
@@ -333,7 +336,7 @@ def _absorb(doc, name_hint, data, errors):
                 sym = (doc["chart"].get("result") or [{}])[0]["meta"]["symbol"]
             except (AttributeError, KeyError, TypeError, IndexError):
                 raise ScanError("an offline v8 chart without a symbol: name the file <TICKER>.json")
-        sym = sym.upper().replace("-", ".")
+        sym = nse_data.nse_symbol(sym)
         try:
             data[sym] = parse_chart(doc, sym)
         except ScanError as e:
@@ -342,7 +345,8 @@ def _absorb(doc, name_hint, data, errors):
         for k, v in doc.items():
             _absorb(v, k, data, errors)
     else:
-        raise ScanError("offline file %s is not a spark answer, a v8 chart or a bundle" % name_hint)
+        raise ScanError("offline file %s is not an NSE history answer, a spark answer, a v8 chart or a bundle"
+                        % name_hint)
 
 
 def load_offline(path):
@@ -357,7 +361,7 @@ def load_offline(path):
                 doc = json.loads(_read_maybe_gz(os.path.join(path, f)))
             except ValueError as e:
                 raise ScanError("%s is not valid JSON: %s" % (f, e))
-            if isinstance(doc, dict) and ("chart" in doc or "spark" in doc):
+            if isinstance(doc, dict) and ("chart" in doc or "spark" in doc or nse_data.is_history(doc)):
                 _absorb(doc, "" if "spark" in doc else _stem(f), data, errors)
             else:
                 _absorb(doc, "", data, errors)
@@ -374,87 +378,51 @@ def load_offline(path):
 
 # ---------------------------------------------------------------- universe
 
-TICKER = re.compile(r"^[A-Z]{1,5}$|^[A-Z]{1,4}\.[A-Z]$|^[A-Z0-9&\-]{1,20}\.NS$")
-ALWAYS_OUT = [
-    ("warrant", re.compile(r"\bwarrants?\b")),
-    ("unit or right", re.compile(r"\b(units?|rights?),? (each|that|entitling)\b|(?<!the )\brights? to\b")),
-    ("note", re.compile(r"\b(notes?|etns?|debentures?)\b")),
-    ("coupon", re.compile(r"%")),
-    ("depositary", re.compile(r"(?<!american )(?<!global )\bdepositary shares?\b")),
-]
-COMMON = re.compile(
-    r"\bcommon (stock|shares?|units?)\b|\bord(inary)? shares?\b|\bshares? of beneficial interest\b"
-    r"|\b(american|global) deposit[ao]ry\b|\bads[s]?\b|\badrs?\b"
-    r"|\b(limited partnership|partnership|trust) units?\b|\bl\.?p\.? units?\b"
-    r"|\bunits? (of|representing)\b.*\b(limited partner|partnership|beneficial interest|limited liability)")
-SOFT_OUT = [
-    ("unit", re.compile(r"\bunits?\b")),
-    ("right", re.compile(r"\brights?\b")),
-    ("bond", re.compile(r"\bbonds?\b")),
-    ("preferred", re.compile(r"\bpreferred\b|\bpreference\b")),
-]
+def load_equity_offline(path):
+    """A cm_get_equity_stocks answer, or a folder of them -> the JSON docs."""
+    files = ([os.path.join(path, f) for f in sorted(os.listdir(path)) if f.endswith((".json", ".json.gz"))]
+             if os.path.isdir(path) else [path])
+    if not files or not os.path.exists(files[0]):
+        raise ScanError("no NSE equity list at %s" % path)
+    docs = []
+    for f in files:
+        try:
+            doc = json.loads(_read_maybe_gz(f))
+        except ValueError as e:
+            raise ScanError("%s is not valid JSON: %s" % (f, e))
+        if not nse_data.is_equity_page(doc):
+            raise ScanError("%s is not a cm_get_equity_stocks answer" % f)
+        docs.append(doc)
+    return docs
 
 
-def classify(row):
-    """One symbol-directory row -> 'keep' or the rule that drops it."""
-    sym = (row.get("Symbol") or row.get("ACT Symbol") or "").strip()
-    if (row.get("Test Issue") or "").strip() != "N":
-        return "test issue"
-    if (row.get("ETF") or "").strip() != "N":
-        return "ETF"
-    if (row.get("NextShares") or "N").strip() != "N":
-        return "NextShares"
-    if not TICKER.match(sym):
-        return "not a plain ticker"
-    if re.search(r"\.[UWR]$", sym):
-        return "unit / warrant / right suffix"
-    name = " ".join((row.get("Security Name") or "").lower().split())
-    for tag, rx in ALWAYS_OUT:
-        if rx.search(name):
-            return tag
-    if COMMON.search(name):
-        return "keep"
-    for tag, rx in SOFT_OUT:
-        if rx.search(name):
-            return tag
-    return "keep"
+def build_universe(docs, series=("EQ",)):
+    """cm_get_equity_stocks answers -> [{symbol, series, price, volume}], one a symbol, sorted."""
+    rows = {}
+    for d in docs:
+        for r in nse_data.equity_rows(d, series):
+            rows[r["symbol"]] = r
+    return [rows[k] for k in sorted(rows)]
 
 
-def parse_symdir(text):
-    """Nasdaq Trader pipe file -> (rows, file_created). The last line is 'File Creation Time: ...'."""
-    lines = [ln for ln in text.replace("\r", "").split("\n") if ln.strip()]
-    if not lines or "|" not in lines[0]:
-        raise ScanError("not a Nasdaq Trader symbol directory")
-    hdr = [h.strip() for h in lines[0].split("|")]
-    if "Security Name" not in hdr or not ({"Symbol", "ACT Symbol"} & set(hdr)):
-        raise ScanError("not a Nasdaq Trader symbol directory (header %s)" % lines[0][:60])
-    rows, created = [], None
-    for ln in lines[1:]:
-        if ln.startswith("File Creation Time"):
-            m = re.search(r"(\d{2})(\d{2})(\d{4})(\d{2}):(\d{2})", ln)
-            if m:
-                created = "%s-%s-%s %s:%s" % (m.group(3), m.group(1), m.group(2), m.group(4), m.group(5))
-            continue
-        rows.append(dict(zip(hdr, ln.split("|"))))
-    return rows, created
+def nse_universe(a=None):
+    """The live NSE equity list (series EQ)."""
+    if a is not None:
+        progress(a, "Fetching the NSE equity list from NSE's MCP server...")
+    try:
+        return nse_data.fetch_equity_list()
+    except nse_data.NSEError as e:
+        raise ScanError("could not get the NSE equity list: %s" % e)
 
 
-def build_universe(texts):
-    """{filename: text} -> (kept [(SYM, name)], counts, created)."""
-    kept, counts, created = {}, {}, None
-    for fname in NASDAQ_FILES:
-        if fname not in texts:
-            raise ScanError("missing %s" % fname)
-        rows, c = parse_symdir(texts[fname])
-        created = created or c
-        counts["rows"] = counts.get("rows", 0) + len(rows)
+def write_universe(path, rows):
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("# NSE capital-market equities (series EQ), from NSE's CM Market Live MCP server\n")
         for r in rows:
-            why = classify(r)
-            counts[why] = counts.get(why, 0) + 1
-            if why == "keep":
-                sym = (r.get("Symbol") or r.get("ACT Symbol")).strip()
-                kept[sym] = " ".join((r.get("Security Name") or "").split())
-    return sorted(kept.items()), counts, created
+            fh.write("%s\n" % r["symbol"])
 
 
 # ---------------------------------------------------------------- daily setups
@@ -755,11 +723,16 @@ def read_symbols(a, offline_syms=None):
     else:
         path = a.universe or DEFAULT_UNIVERSE
         if not os.path.exists(path):
-            raise ScanError("no %s yet: run `scan.py universe` first, or pass --symbols" % path)
+            if a.universe or offline_syms is not None:
+                raise ScanError("no %s yet: run `scan.py universe` first, or pass --symbols" % path)
+            # the default universe: every NSE equity (series EQ), built once and saved
+            write_universe(path, nse_universe(a))
+            progress(a, "Wrote %s (the NSE equity list; `scan.py universe` refreshes it)." % path)
         syms = symbols_from_file(path)
     out = []
     for s in syms:
-        if s not in out:
+        s = nse_data.nse_symbol(s)
+        if s and s not in out:
             out.append(s)
     if a.limit:
         out = out[:a.limit]
@@ -816,45 +789,20 @@ def money(x):
 
 def cmd_universe(a):
     t0 = time.time()
-    texts = {}
-    for k, fname in enumerate(NASDAQ_FILES):
-        if a.offline:
-            p = os.path.join(a.offline, fname)
-            if not os.path.exists(p):
-                raise ScanError("no %s in %s" % (fname, a.offline))
-            with open(p, encoding="utf-8", errors="replace") as fh:
-                texts[fname] = fh.read()
-        else:
-            if k and a.pause:
-                SLEEP(a.pause)
-            try:
-                texts[fname] = http_get(NASDAQ_URL + fname, timeout=60)
-            except urllib.error.HTTPError as e:
-                raise ScanError("nasdaqtrader.com answered HTTP %d for %s" % (e.code, fname))
-            except (urllib.error.URLError, OSError) as e:
-                raise ScanError("could not reach nasdaqtrader.com: %s" % getattr(e, "reason", e))
-    kept, counts, created = build_universe(texts)
+    rows = build_universe(load_equity_offline(a.offline)) if a.offline else nse_universe(a)
+    if not rows:
+        raise ScanError("the NSE equity list came back empty")
     if not a.no_write:
-        d = os.path.dirname(a.out)
-        if d:
-            os.makedirs(d, exist_ok=True)
-        with open(a.out, "w", encoding="utf-8") as fh:
-            for sym, name in kept:
-                fh.write("%s|%s\n" % (sym, name))
-    dropped = {k: v for k, v in counts.items() if k not in ("keep", "rows")}
+        write_universe(a.out, rows)
     if a.json:
-        print(json.dumps({"count": len(kept), "rows": counts.get("rows", 0), "files_created": created,
-                          "dropped": dropped, "out": None if a.no_write else a.out,
-                          "seconds": round(time.time() - t0, 1)}, indent=2))
+        print(json.dumps({"count": len(rows), "series": ["EQ"], "source": "offline" if a.offline else "nse",
+                          "out": None if a.no_write else a.out, "seconds": round(time.time() - t0, 1)}, indent=2))
     else:
-        print("Nasdaq Trader symbol directories%s: %s rows." % (
-            (", files of %s IST" % created) if created else "", "{:,}".format(counts.get("rows", 0))))
-        print("Kept %s US-listed common stocks, ordinary shares and ADRs." % "{:,}".format(len(kept)))
-        print("Dropped: " + ", ".join("%s %s" % ("{:,}".format(v), k)
-                                      for k, v in sorted(dropped.items(), key=lambda kv: -kv[1])) + ".")
+        print("NSE capital-market equities, series EQ: %s symbols (%s)." % (
+            "{:,}".format(len(rows)), "offline file" if a.offline else "NSE's CM Market Live MCP server"))
         if not a.no_write:
-            print("Wrote %s (one SYMBOL|Name a line)." % a.out)
-    return 0 if kept else 1
+            print("Wrote %s (one NSE symbol a line, no .NS suffix)." % a.out)
+    return 0
 
 
 def cmd_daily(a):
@@ -866,16 +814,19 @@ def cmd_daily(a):
         offline_syms = sorted(set(data) | set(failed))
     symbols = read_symbols(a, offline_syms)
     if not a.offline:
-        progress(a, "Fetching daily closes for %s symbols (%d spark requests)..."
-                 % ("{:,}".format(len(symbols)), (len(symbols) + SPARK_MAX - 1) // SPARK_MAX))
-        data, failed = fetch_spark(symbols, "3mo", "1d", a.pause, a)
+        progress(a, "Fetching 3 months of daily bars for %s symbols from NSE's MCP server..."
+                 % "{:,}".format(len(symbols)))
+        data, failed = nse_data.fetch_daily(symbols, months=3)
     hits, counts, last_date = scan_daily(data, symbols, now, a.min_price, a.min_volume)
+    backup = sorted(s for s, v in data.items() if s in symbols and (v.get("meta") or {}).get("source") == "cache")
     nfailed = len(symbols) - counts["fetched"]
     as_of = ("%s close" % last_date.isoformat()) if last_date else None
     doc = {"created_by": "trader-scanner", "created_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "mode": "daily",
            "as_of": as_of, "universe": len(symbols), "scanned": counts["scanned"], "failed": nfailed,
-           "source": "yahoo", "filters": {"min_price": a.min_price, "min_volume": a.min_volume},
+           "source": "offline" if a.offline else "nse", "filters": {"min_price": a.min_price, "min_volume": a.min_volume},
            "note": NOTE, "hits": hits}
+    if backup:
+        doc["from_backup"] = backup
     if a.offline:
         doc["offline"] = os.path.basename(a.offline.rstrip("/"))
     if not a.no_write:
@@ -884,8 +835,11 @@ def cmd_daily(a):
         print(json.dumps(dict(doc, counts=counts, seconds=round(time.time() - t0, 1)), indent=2))
         return 0 if hits else 1
     local = to_ist(now)
-    print("Daily scan, %s IST, closes through %s (Yahoo spark, daily closes only)." % (
+    print("Daily scan, %s IST, closes through %s (NSE bhavcopy, daily closes)." % (
         local.strftime("%a %Y-%m-%d %H:%M"), last_date.isoformat() if last_date else "nothing"))
+    if backup:
+        print("NSE could not serve %d symbol%s; their bars came from the backup (local cache): %s."
+              % (len(backup), "" if len(backup) == 1 else "s", ", ".join(backup[:10]) + (" ..." if len(backup) > 10 else "")))
     print("Fetched %s of %s charts%s. %s passed the liquidity filter ($%s+ and %s+ shares)%s; "
           "%s scanned." % ("{:,}".format(counts["fetched"]), "{:,}".format(len(symbols)),
                            (" (%s failed or had no data)" % "{:,}".format(nfailed)) if nfailed else "",
@@ -1008,18 +962,18 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="Chart Scanner (trader-scanner): daily setups and opening-range breakouts.")
     sub = ap.add_subparsers(dest="cmd")
 
-    p = sub.add_parser("universe", help="download Nasdaq Trader's lists -> trader/universe.txt")
+    p = sub.add_parser("universe", help="the NSE equity list (series EQ) -> trader/universe.txt")
     p.add_argument("--out", default=DEFAULT_UNIVERSE)
-    p.add_argument("--offline", metavar="DIR", help="a folder with nasdaqlisted.txt and otherlisted.txt")
+    p.add_argument("--offline", metavar="PATH", help="a cm_get_equity_stocks answer, or a folder of them")
     p.add_argument("--no-write", action="store_true")
     p.add_argument("--pause", type=float, default=PAUSE)
     p.add_argument("--json", action="store_true")
 
     def common(p, min_price, min_volume):
         g = p.add_mutually_exclusive_group()
-        g.add_argument("--symbols", help="comma-separated tickers instead of the universe")
+        g.add_argument("--symbols", help="comma-separated NSE symbols instead of the universe (RELIANCE,TCS)")
         g.add_argument("--watchlist", metavar="FILE", help="a watchlist.json (hits) or a text file of tickers")
-        p.add_argument("--universe", help="symbol list, one SYMBOL|Name a line (default %s)" % DEFAULT_UNIVERSE)
+        p.add_argument("--universe", help="symbol list, one NSE symbol a line (default %s)" % DEFAULT_UNIVERSE)
         p.add_argument("--limit", type=int, help="scan only the first N symbols")
         p.add_argument("--min-price", type=float, default=min_price)
         p.add_argument("--min-volume", type=int, default=min_volume)

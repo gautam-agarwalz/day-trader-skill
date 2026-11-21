@@ -368,11 +368,12 @@ def read_text(path):
 
 
 def load_chart(sym, interval, day, offline=None):
-    ysym = sym.upper() if sym.upper().endswith(".NS") else sym.upper().replace(".", "-")   # RELIANCE.NS stays
+    base = sym.upper()[:-3] if sym.upper().endswith(".NS") else sym.upper()
+    ysym = base + ".NS"   # Yahoo's spelling of an NSE symbol: RELIANCE -> RELIANCE.NS
     if offline:
         path = offline
         if os.path.isdir(offline):
-            path = os.path.join(offline, ysym + ".json")
+            path = os.path.join(offline, base + ".json")
             if not os.path.exists(path):
                 path += ".gz"
         if not os.path.exists(path):
@@ -397,7 +398,7 @@ def load_chart(sym, interval, day, offline=None):
         raise PlanError("Yahoo has no data for %s: %s" % (sym, err.get("description") or "unknown ticker"))
     r = res[0] or {}
     meta = r.get("meta") or {}
-    if str(meta.get("symbol") or ysym).upper() != ysym:
+    if str(meta.get("symbol") or ysym).upper() not in (ysym, base):
         raise PlanError("the chart file holds %s, not %s" % (meta.get("symbol"), sym))
     q = ((r.get("indicators") or {}).get("quote") or [{}])[0] or {}
 

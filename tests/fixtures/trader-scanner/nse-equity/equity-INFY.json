@@ -1,0 +1,26 @@
+{
+ "segment": "EQUITY",
+ "updatedAt": "2026-11-21T17:55:11.597862099Z",
+ "returned": 1,
+ "stocks": [
+  {
+   "type": "CM",
+   "symbol": "INFY",
+   "series": "EQ",
+   "openPrice": 1087.0,
+   "highPrice": 1118.8,
+   "lowPrice": 1081.7,
+   "preClosePrice": 1091.9,
+   "lastTradedPrice": 1098.0,
+   "indicativeClosePrice": 0.0,
+   "change": 6.1,
+   "perChange": 0.56,
+   "volume": 13749744,
+   "value": 1515.799278048,
+   "fiftyTwoWeekHigh": 1728.0,
+   "fiftyTwoWeekLow": 980.4,
+   "perChange30d": -2.89,
+   "latestTimestamp": "2026-11-20 16:00:28"
+  }
+ ]
+}

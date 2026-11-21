@@ -344,7 +344,7 @@ class Network(unittest.TestCase):
         self.answers(429, 200)
         c = entry.get_chart("TSLA", "5m", datetime.date(2026, 10, 19), today=datetime.date(2026, 10, 19))
         self.assertEqual(len(c["bars"]), 17)
-        self.assertEqual(self.calls, ["https://query2.finance.yahoo.com/v8/finance/chart/TSLA?range=1d&interval=5m"] * 2)
+        self.assertEqual(self.calls, ["https://query2.finance.yahoo.com/v8/finance/chart/TSLA.NS?range=1d&interval=5m"] * 2)
         self.assertEqual(self.sleeps, [entry.BACKOFF])
 
     def test_429_twice_falls_back_to_query1(self):
@@ -380,7 +380,7 @@ class Network(unittest.TestCase):
         self.assertEqual(entry.chart_range(datetime.date(2026, 8, 31), today, "5m"), "60d")
         with self.assertRaises(entry.EntryError):
             entry.chart_range(datetime.date(2026, 10, 1), today, "1m")
-        self.assertIn("/chart/BRK-B?", entry.chart_path("brk.b", "1d", "5m"))
+        self.assertIn("/chart/TCS.NS?", entry.chart_path("tcs", "1d", "5m"))       # a bare NSE symbol
         self.assertIn("/chart/RELIANCE.NS?", entry.chart_path("reliance.ns", "1d", "5m"))
         self.assertIn("/chart/M%26M.NS?", entry.chart_path("M&M.NS", "1d", "5m"))
 
