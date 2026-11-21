@@ -782,7 +782,7 @@ def write_json(path, doc):
 
 
 def money(x):
-    return "${:,.2f}".format(x)
+    return "₹{:,.2f}".format(x)
 
 
 # ---------------------------------------------------------------- commands
@@ -840,7 +840,7 @@ def cmd_daily(a):
     if backup:
         print("NSE could not serve %d symbol%s; their bars came from the backup (local cache): %s."
               % (len(backup), "" if len(backup) == 1 else "s", ", ".join(backup[:10]) + (" ..." if len(backup) > 10 else "")))
-    print("Fetched %s of %s charts%s. %s passed the liquidity filter ($%s+ and %s+ shares)%s; "
+    print("Fetched %s of %s charts%s. %s passed the liquidity filter (₹%s+ and %s+ shares)%s; "
           "%s scanned." % ("{:,}".format(counts["fetched"]), "{:,}".format(len(symbols)),
                            (" (%s failed or had no data)" % "{:,}".format(nfailed)) if nfailed else "",
                            "{:,}".format(counts["fetched"] - counts["illiquid"]), _n(a.min_price),
