@@ -20,9 +20,9 @@ V1_TODAY = "2026-10-13"
 PRICES = {"AAPL": 341.27, "AXP": 309.84, "GOOGL": 353.78, "KO": 90.11, "BAC": 53.96}
 QUOTE_TIME = datetime.datetime(2026, 10, 19, 5, 7, 13)    # Yahoo's TSLA quote 366.475, 10:37:13 IST
 # v1's rules with every day-trade check switched off: the long-term checks still hold
-V1 = {"budget": 5000, "cash_buffer_pct": 10, "max_position_pct": 25, "max_order_usd": 2000, "min_order_usd": 5,
+V1 = {"budget": 5000, "cash_buffer_pct": 10, "max_position_pct": 25, "max_order_inr": 2000, "min_order_inr": 5,
       "max_orders_per_day": 10, "require_stop": False, "no_entries_before": None, "no_entries_after": None,
-      "max_trades_per_day": 0, "max_daily_loss_usd": 0, "max_loss_per_trade_usd": 0, "min_reward_risk": 0}
+      "max_trades_per_day": 0, "max_daily_loss_inr": 0, "max_loss_per_trade_inr": 0, "min_reward_risk": 0}
 
 
 def at(text):
@@ -95,7 +95,7 @@ class TheReel(unittest.TestCase):
         self.assertEqual(r["warnings"], [])
         self.assertEqual((r["kind"], r["entry_ref"], r["stop"], r["target"]), ("entry", 364.18, 358.32, 370.04))
         self.assertEqual((r["risk_per_share"], r["max_loss"], r["reward_risk"]), (5.86, 46.88, 1.0))
-        self.assertEqual(r["value_usd"], 2913.44)
+        self.assertEqual(r["value_inr"], 2913.44)
         self.assertEqual(res["cash_after"], 2086.56)
         self.assertEqual(res["date"], TODAY)
         self.assertIs(res["paper"], True)
@@ -105,6 +105,23 @@ class TheReel(unittest.TestCase):
         self.assertEqual(verdicts(res), ["BLOCK"])
         self.assertEqual(res["results"][0]["reasons"],
                          ["loss: 9 shares x 5.86 risk a share = ₹52.74 at the stop, over your ₹50 max loss per trade"])
+
+    def test_the_old_usd_config_names_still_work(self):
+        old = cfg()
+        for k in ("max_loss_per_trade", "max_daily_loss", "max_order", "min_order"):
+            old[k + "_usd"] = old.pop(k + "_inr")
+        self.assertEqual(check.normalize_config(old), cfg())
+        res = check.check([tsla(qty="9")], old, now=at(NOW))
+        self.assertIn("over your ₹50 max loss per trade", reasons(res))
+        # both names in one file: the _inr one wins
+        both = dict(cfg(max_loss_per_trade_inr=60), max_loss_per_trade_usd=50)
+        self.assertEqual(verdicts(check.check([tsla(qty="9")], both, now=at(NOW))), ["PASS"])
+        with tempfile.TemporaryDirectory() as d:          # and from a config file on disk
+            p = os.path.join(d, "config.json")
+            with open(p, "w") as fh:
+                json.dump(old, fh)
+            res = check.check([tsla(qty="9")], check.read_json(p, "config"), now=at(NOW))
+            self.assertIn("over your ₹50 max loss per trade", reasons(res))
 
     def test_fingerprint_is_shared_with_the_broker(self):
         o = tsla()
@@ -324,7 +341,7 @@ class Exits(unittest.TestCase):
         full = {"orders": [placed("TSLA"), placed("AMD"), placed("NVDA")] +
                           [placed("T%d" % i, max_loss=1) for i in range(6)] +
                           [placed("TSLA", side="sell", kind="exit", max_loss=None)]}
-        c = cfg(blocked=["TSLA"], max_order_usd=100, max_daily_loss_usd=50)
+        c = cfg(blocked=["TSLA"], max_order_inr=100, max_daily_loss_inr=50)
         res = check.check([self.SELL], c, portfolio=self.PF, state=full, now=at("2026-10-19 15:28"))
         r = res["results"][0]
         self.assertEqual((r["verdict"], r["kind"]), ("PASS", "exit"), r["reasons"])
@@ -369,7 +386,7 @@ class V1Checks(unittest.TestCase):
         res = check.check(v1_orders(), v1(), today=V1_TODAY)
         self.assertEqual(verdicts(res), ["PASS"] * 5)
         self.assertEqual(res["cash_after"], 500)
-        self.assertEqual(res["results"][0]["value_usd"], 1250)
+        self.assertEqual(res["results"][0]["value_inr"], 1250)
         self.assertEqual(res["results"][0]["amount"], "₹1,250")
 
     def test_a_sixth_buy_is_blocked_three_ways(self):
@@ -429,7 +446,7 @@ class V1Checks(unittest.TestCase):
         q["symbol"] = "KO"
         r = self.one(q)
         self.assertEqual(r["verdict"], "PASS")
-        self.assertAlmostEqual(r["value_usd"], 180.22)
+        self.assertAlmostEqual(r["value_inr"], 180.22)
 
     def test_margin(self):
         r = check.check([buy("KO", 1500)], v1(cash_buffer_pct=0, max_position_pct=100),

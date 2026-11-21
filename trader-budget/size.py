@@ -16,9 +16,9 @@ checks the order and trader-broker asks you yes or no.
 How many shares. Whole shares only: Alpaca takes no fractions in a bracket.
 
     shares = floor of the smallest of
-      max loss       max_loss_per_trade_usd / risk per share (entry minus stop)
+      max loss       max_loss_per_trade_inr / risk per share (entry minus stop)
       position cap   budget x max_position_pct / entry
-      max order      max_order_usd / entry
+      max order      max_order_inr / entry
       cash           (budget minus the cash buffer) / entry
                      (and no more than the cash in trader/portfolio.json, if you have one)
 
@@ -42,7 +42,7 @@ list of stocks by weight.
   3. cap           no stock gets more than max_position_pct of the budget;
                    anything over the cap is shared out to the others by
                    weight, again and again until nobody is over
-  4. min order     a slice under min_order_usd is dropped and its weight
+  4. min order     a slice under min_order_inr is dropped and its weight
                    shared out, so you never place a ₹2 order
   5. rounding      whole dollars by default (--cents for cents); the rounding
                    dollar goes to the biggest position that is not capped
@@ -63,10 +63,10 @@ DEFAULTS = {
     "budget": None,
     "cash_buffer_pct": 10,
     "max_position_pct": 75,
-    "max_order_usd": 4000,
-    "min_order_usd": 5,
-    "max_loss_per_trade_usd": 50,
-    "max_daily_loss_usd": 150,
+    "max_order_inr": 4000,
+    "min_order_inr": 5,
+    "max_loss_per_trade_inr": 50,
+    "max_daily_loss_inr": 150,
     "max_trades_per_day": 3,
     "max_orders_per_day": 10,
     "min_reward_risk": 1.0,
@@ -86,6 +86,26 @@ DEFAULTS = {
 EPS = 1e-9
 FRESH_MINUTES = 15
 SETUP_WORDS = {"orb": "opening-range breakout", "flag": "flag", "bounce": "oversold bounce"}
+
+
+# Money settings are in rupees. The old _usd names (from before the NSE switch) still work:
+# normalize_config() maps them to the _inr names, and an _inr value wins when a file has both.
+CONFIG_ALIASES = {
+    "max_loss_per_trade_usd": "max_loss_per_trade_inr",
+    "max_daily_loss_usd": "max_daily_loss_inr",
+    "max_order_usd": "max_order_inr",
+    "min_order_usd": "min_order_inr",
+}
+
+
+def normalize_config(cfg):
+    """A config dict with the old _usd money names -> the same dict with the _inr names."""
+    out = dict(cfg or {})
+    for old, new in CONFIG_ALIASES.items():
+        if old in out:
+            value = out.pop(old)
+            out.setdefault(new, value)
+    return out
 
 
 class SizeError(Exception):
@@ -152,7 +172,7 @@ def read_json(path, what):
 def load_config(path):
     cfg = dict(DEFAULTS)
     if path and os.path.exists(path):
-        cfg.update(read_json(path, "config"))
+        cfg.update(normalize_config(read_json(path, "config")))
     return cfg
 
 
@@ -292,7 +312,7 @@ def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=
     cash   the cash in trader/portfolio.json, if there is one
     today  India date (YYYY-MM-DD); a plan for another day is refused"""
     c = dict(DEFAULTS)
-    c.update(cfg or {})
+    c.update(normalize_config(cfg))
     if not isinstance(plan, dict):
         raise SizeError("the plan is not a JSON object")
     sym = str(plan.get("symbol") or "").strip().upper()
@@ -346,7 +366,7 @@ def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=
     available = max(round(available, 2), 0.0)
 
     limits = []
-    max_loss = _f(c.get("max_loss_per_trade_usd"))
+    max_loss = _f(c.get("max_loss_per_trade_inr"))
     if max_loss:
         limits.append({"name": "max loss", "usd": max_loss, "per": risk, "shares": shares_for(max_loss, risk),
                        "how": "%s max loss / %s risk a share" % (money(max_loss), _price(risk))})
@@ -355,7 +375,7 @@ def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=
         cap = round(budget * cap_pct / 100.0, 2)
         limits.append({"name": "position cap", "usd": cap, "per": ref, "shares": shares_for(cap, ref),
                        "how": "%s%% of %s = %s / %s" % (_num(cap_pct), money(budget), money(cap), _price(ref))})
-    max_order = _f(c.get("max_order_usd"))
+    max_order = _f(c.get("max_order_inr"))
     if max_order:
         limits.append({"name": "max order", "usd": max_order, "per": ref, "shares": shares_for(max_order, ref),
                        "how": "%s / %s" % (money(max_order), _price(ref))})
@@ -381,9 +401,9 @@ def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=
         refusal = ("reward:risk %.2f (target %s, entry %s, stop %s) is under your minimum %s, so trader-risk "
                    "would block it. No order. Skip it, or make a new plan with trader-exit."
                    % (reward_c / float(risk_c), _price(target), _price(ref), _price(stop), _num(c["min_reward_risk"])))
-    elif cost < float(c.get("min_order_usd") or 0) - 0.005:
+    elif cost < float(c.get("min_order_inr") or 0) - 0.005:
         refusal = ("%d share%s of %s is %s, under your %s minimum order. No order."
-                   % (qty, "" if qty == 1 else "s", sym, money(cost), money(c["min_order_usd"])))
+                   % (qty, "" if qty == 1 else "s", sym, money(cost), money(c["min_order_inr"])))
     return {
         "symbol": sym, "side": "buy", "setup": plan.get("setup", ""), "date": plan.get("date"),
         "entry_time": plan.get("entry_time", ""), "entry_plan": round_cent(entry_plan),
@@ -391,7 +411,7 @@ def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=
         "risk_per_share": risk, "reward_risk": round(reward_c / float(risk_c), 2),
         "stop_label": plan.get("stop_label", ""), "target_label": plan.get("target_label", ""),
         "budget": budget, "cash_buffer_pct": buf_pct, "cash_buffer": cash_buffer, "cash_available": available,
-        "max_loss_per_trade_usd": max_loss, "limits": limits, "qty": qty, "bound_by": bound[0],
+        "max_loss_per_trade_inr": max_loss, "limits": limits, "qty": qty, "bound_by": bound[0],
         "cost": cost, "max_loss": loss, "flat_by": plan.get("flat_by") or c.get("flat_by"),
         "order_type": "limit" if limit is not None else "market", "refusal": refusal,
     }
@@ -407,7 +427,7 @@ def bracket_order(s):
         o["limit_price"] = _price(s["entry"])
     setup = SETUP_WORDS.get(s["setup"], s["setup"] or "day trade")
     why = ("%s on %s: %d shares, bound by your %s (%d x %s = %s at the stop)"
-           % (setup, s["symbol"], s["qty"], {"max loss": "%s max loss per trade" % money(s["max_loss_per_trade_usd"] or 0),
+           % (setup, s["symbol"], s["qty"], {"max loss": "%s max loss per trade" % money(s["max_loss_per_trade_inr"] or 0),
                                              "position cap": "position cap", "max order": "max order",
                                              "cash": "cash after the buffer"}[s["bound_by"]],
               s["qty"], _price(s["risk_per_share"]), money(s["max_loss"])))
@@ -586,12 +606,13 @@ def whole_shares(dollars, prices, order, cap, cash):
 
 def size(rows, cfg, budget=None, prices=None, whole=None, cents=False, top=None):
     """Weights mode. Pure function: weights + rules -> the full sizing result (a dict)."""
+    cfg = normalize_config(cfg)
     budget = float(budget if budget is not None else (cfg.get("budget") or 0))
     if budget <= 0:
         raise SizeError("no budget: pass --budget or set \"budget\" in trader/config.json")
     buf_pct = float(cfg.get("cash_buffer_pct", 10))
     cap_pct = float(cfg.get("max_position_pct", 25))
-    min_order = float(cfg.get("min_order_usd", 5) or 0)
+    min_order = float(cfg.get("min_order_inr", 5) or 0)
     if not 0 <= buf_pct < 100:
         raise SizeError("cash_buffer_pct must be between 0 and 100")
     if not 0 < cap_pct <= 100:
@@ -657,7 +678,7 @@ def size(rows, cfg, budget=None, prices=None, whole=None, cents=False, top=None)
     return {
         "budget": budget, "cash_buffer_pct": buf_pct, "cash_buffer": cash_buffer,
         "investable": investable, "max_position_pct": cap_pct, "cap": cap,
-        "min_order_usd": min_order, "whole_shares": bool(whole),
+        "min_order_inr": min_order, "whole_shares": bool(whole),
         "positions": positions, "invested": invested,
         "idle": round(investable - invested, 2), "dropped": dropped,
     }
