@@ -116,7 +116,30 @@ class Repo(unittest.TestCase):
     def test_requirements(self):
         with open(os.path.join(ROOT, "requirements.txt"), encoding="utf-8") as fh:
             reqs = [ln.split("#")[0].strip() for ln in fh if ln.split("#")[0].strip()]
-        self.assertEqual(reqs, ["mcp>=2.3,<3"])
+        self.assertEqual(reqs, ["mcp>=2.3,<3", "requests>=2.31", "feedparser>=6.0", "pypdf>=4.0", "pdfplumber>=0.10",
+                                "pandas>=2.0", "openpyxl>=3.1", "beautifulsoup4>=4.12"])
+        self.assertFalse(any(r.startswith(("yfinance", "pandas-datareader")) for r in reqs))
+
+    def test_one_india_http_layer_shared_by_smart_money_and_catalysts(self):
+        with open(os.path.join(ROOT, "trader-pelosi", "india_http.py"), encoding="utf-8") as fh:
+            a = fh.read()
+        with open(os.path.join(ROOT, "trader-news", "india_http.py"), encoding="utf-8") as fh:
+            b = fh.read()
+        self.assertEqual(a, b, "copy trader-pelosi/india_http.py over trader-news/india_http.py")
+
+    def test_no_language_model_calls_and_no_us_feeds_in_the_indian_modules(self):
+        for s in SKILLS:
+            folder = os.path.join(ROOT, s)
+            for f in os.listdir(folder):
+                if not f.endswith(".py"):
+                    continue
+                with open(os.path.join(folder, f), encoding="utf-8") as fh:
+                    src = fh.read().lower()
+                for bad in ("import anthropic", "from anthropic", "import openai", "api.anthropic.com", "telegram"):
+                    self.assertNotIn(bad, src, "%s/%s" % (s, f))
+                if s in ("trader-pelosi", "trader-news"):
+                    for us in ("sec.gov", "edgar", "house.gov", "yahoo", "periodic transaction"):
+                        self.assertNotIn(us, src, "%s/%s" % (s, f))
 
     def test_one_nse_data_layer_shared_by_scanner_and_alerts(self):
         with open(os.path.join(ROOT, "trader-scanner", "nse_data.py"), encoding="utf-8") as fh:

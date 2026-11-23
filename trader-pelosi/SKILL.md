@@ -1,145 +1,108 @@
 ---
 name: trader-pelosi
 description: >-
-  The Pelosi Tracker. Watches the stock trades members of Congress must
-  disclose under the STOCK Act: reads the House Clerk's public Periodic
-  Transaction Reports (PTRs) as soon as they are posted, alerts once per new
-  filing, and turns each PDF into clean rows (who, owner, stock, ticker,
-  buy or sell, options strike and expiry, trade date, amount range, how many
-  days it took to disclose). Flags trades in stocks you hold. Senate reports
-  are covered by a documented manual route. Use when the user says "what is
-  Pelosi buying", "track Nancy Pelosi", "Congress trades", "politician stock
-  trades", "did any congressman buy X", "alert me when Pelosi files", or
-  "run the Pelosi skill".
-argument-hint: "[member name] [--read]"
+  Indian Smart Money & Institutional Tracker. Reads official NSE and AMFI data
+  to show who is really buying and selling Indian stocks: NSE bulk and block
+  deals checked against the day's delivery % (intraday round trips filtered
+  out), SEBI PIT insider-trading disclosures (promoter, director and KMP
+  open-market buys highlighted), SAST takeover disclosures (5 % crossings),
+  promoter pledge creation and release, quarterly shareholding shifts (FII,
+  DII, promoter), the day's FII / DII cash flows, and mutual fund monthly
+  portfolios (fresh buys and stake increases). Flags each item once, saves
+  JSON and CSV locally, and never calls a language model. Use when the user
+  says "smart money", "who is buying", "bulk deals", "block deals", "insider
+  buying", "promoter buying", "pledge", "SAST", "FII DII data", "shareholding
+  pattern", "mutual fund buying", or "run the Pelosi skill".
+argument-hint: "[--only deals,insider,sast,pledge,shareholding,fiidii,amfi]"
 ---
 
 # trader-pelosi
 
-Members of Congress have to report their trades, their spouse's and their
-dependent children's. The House Clerk posts every report as a PDF and lists
-them all in one index file per year. This skill reads that index, notices the
-moment a new report appears, and reads the report for you.
+The folder keeps its old name so installs and links keep working. The US
+Congress tracker it held is gone: this is now an Indian smart money and
+institutional tracker. Everything it reads is a public disclosure from NSE or
+AMFI. Fast, not early: a disclosure arrives after the trade, sometimes days
+after. There is no inside information here. Say that every time.
 
-It is fast. It is not early. A PTR is due within 30 days of the member
-learning of the trade and never more than 45 days after it, so by the time
-anyone can read it the trade is days or weeks old. There is no inside
-information here: only public filings, read quickly. Say that every time.
-
-Tool in this folder (standard library Python; `pdftotext` from poppler is
-optional, to read the PDFs locally):
+Tool in this folder (Python 3.10+, `pip install -r requirements.txt`):
 
 ```bash
-python3 "${CLAUDE_SKILL_DIR}/ptr.py" --help
+python3 "${CLAUDE_SKILL_DIR}/smartmoney.py"                     # every source, new items only
+python3 "${CLAUDE_SKILL_DIR}/smartmoney.py" --only deals,fiidii  # some sources
+python3 "${CLAUDE_SKILL_DIR}/smartmoney.py" --days 7 --all       # wider window, seen items too
+python3 "${CLAUDE_SKILL_DIR}/smartmoney.py" --dry-run --json     # fetch and parse, write nothing
+python3 "${CLAUDE_SKILL_DIR}/smartmoney.py" amfi-links           # AMFI's list of fund-house portfolio pages
+python3 "${CLAUDE_SKILL_DIR}/smartmoney.py" amfi --file oct.xlsx --amc "PPFAS MF" --month 2026-10
 ```
+
+`smartmoney.py` shares `india_http.py` (the HTTP client, the dedupe state and
+the JSON / CSV writers) with trader-news.
 
 ## What it reads and writes
 
-- Reads `https://disclosures-clerk.house.gov/public_disc/financial-pdfs/<YEAR>FD.zip`
-  (one `<Member>` per filing: name, district, FilingType, FilingDate, DocID)
-  and each PTR at `.../public_disc/ptr-pdfs/<YEAR>/<DocID>.pdf`.
-- Writes `trader/state/pelosi.json` (the DocIDs already shown, so each PTR
-  alerts once) and keeps downloaded PDFs in `trader/state/ptr-pdfs/`.
-- Reads `trader/portfolio.json` (if it exists) to flag trades in what you hold.
+| source | where | what is highlighted |
+| --- | --- | --- |
+| deals | `www.nseindia.in/api/snapshot-capital-market-largedeal`, delivery % from `nsearchives.nseindia.com` `sec_bhavdata_full_<DDMMYYYY>.csv` | block deals, institutions, big high-delivery deals |
+| insider | NSE PIT API, NSE `Insider_Trading.xml` RSS (each XBRL read), announcements citing Reg 7 | promoter / director / KMP open-market buys |
+| sast | `www.nseindia.in/api/corporate-sast-reg29` | open-market 5 % crossings, promoter buys of 0.1 % or more, institutional buys |
+| pledge | `www.nseindia.in/api/corporate-pledgedata` against the last run, Reg 31 announcements | new, bigger, released and revoked pledges |
+| shareholding | `Shareholding_Pattern.xml` RSS (XBRL: promoter, FII, DII, public), NSE shareholding master | a 1 pp move in promoter, FII or DII stake |
+| fiidii | `www.nseindia.in/api/fiidiiTradeReact` (provisional, all exchanges) | a net day of Rs 1,000 cr or more |
+| amfi | AMFI's portfolio-disclosure directory; each fund house's own monthly Excel | a stock new to the fund house, or 10 % more shares |
+
+Writes `trader/smart_money/latest.json` (this run), appends new items to
+`trader/smart_money/alerts.csv`, and keeps `trader/state/smart_money.json`
+(every flagged item for 90 days, plus the pledge, shareholding and fund
+snapshots the diffs need). Mutual fund files to read every run go in
+`trader/amfi_portfolios.json`: `[{"amc": "...", "month": "2026-10", "file": "..."}]`
+(or `"url"`).
 
 ## The rules
 
-- **Quote the filing, not a tracker.** Every row comes from the PTR PDF on the
-  Clerk's site, with its DocID and link. Third-party trackers are fine for
-  browsing but can be off (Capitol Trades showed Pelosi's trade dates one day
-  earlier than her PTRs). The PTR wins.
-- **Amounts are ranges.** "$1,000,001 - $5,000,000", never "$3 million".
-- **Owner matters.** SP is the spouse, JT joint, DC a dependent child, blank
-  the member. Pelosi's 2026 trades are all SP: Paul Pelosi.
-- **Say the delay.** Each row shows how many days passed between the trade
-  and the filing; over 45 is flagged as late.
-- **Options are options.** A call bought with a strike and an expiry is not
-  a share purchase. The tool reads contracts, strike and expiry from the
-  description and marks exercises.
+- **Disclosures are leads, not signals.** Read the filing behind an item
+  before saying what it means. Quote the source and link it.
+- **Intraday is not conviction.** A client that bought and sold the same stock
+  the same day, or a trading desk on a low-delivery day, is filtered out as
+  noise. Say how many were filtered (the tool prints it).
+- **Promoter buying through the market is the strongest insider signal;**
+  ESOP allotments, gifts, inter-se transfers and inheritances are not.
+- **First runs are baselines.** Pledge changes, promoter-stake shifts and fund
+  portfolio changes need a previous snapshot; the first run says so.
+- **Stale feeds are said out loud.** The notes give each feed's newest date
+  (NSE's Insider Trading RSS has been stale since May 2026; its PIT API returned
+  nothing in testing). Never present an old item as new.
+- **No predictions.** Report what was disclosed. Never say what a stock will do.
 
-## Step 1: what has been filed
+## Steps
 
-```bash
-python3 "${CLAUDE_SKILL_DIR}/ptr.py" index --member pelosi
-python3 "${CLAUDE_SKILL_DIR}/ptr.py" index --since 2026-10-01        # every member
-python3 "${CLAUDE_SKILL_DIR}/ptr.py" index --member "Josh Gottheimer" --year 2025
-```
+1. Run `smartmoney.py`. Exit code 1 means nothing new.
+2. Read the highlighted items first (marked `*`), then anything on one of the
+   user's symbols (marked `!`, from the watchlist, the plan and the portfolio).
+3. For each one that matters, open the link and give a short line: who, what,
+   how big, the delivery % for a deal, the holding before and after.
+4. If a disclosure changes the picture for a planned trade (a promoter
+   selling, a pledge invoked), say so before `/trader-entry`. Never act on one
+   alone.
 
-`--member` takes a last name, "First Last" or "Last, First", and repeats.
-`--type ''` lists every filing type (annual reports are type O).
+Schedule it after the close (deals, FII / DII and delivery are final by the
+evening) with a Claude scheduled task, or run `/loop 60m /trader-pelosi`.
 
-## Step 2: watch for new ones
+## Example: a real run (2026-11-23)
 
-```bash
-python3 "${CLAUDE_SKILL_DIR}/ptr.py" new --member pelosi --read
-```
-
-Shows only PTRs not seen at the last check (the first run shows the last 45
-days), downloads and reads them with `--read`, and records them in the state
-file. Exit code 1 means nothing new. In January it also checks last year's
-index. The Clerk rebuilds the index file about once a day (the copy read on
-2026-10-13 was stamped 09:00 that morning), so checking every hour on weekdays
-is plenty: run it with `/loop 1h` or a scheduled task.
-
-## Step 3: read a report
-
-```bash
-python3 "${CLAUDE_SKILL_DIR}/ptr.py" fetch 20035143
-python3 "${CLAUDE_SKILL_DIR}/ptr.py" parse ptr.txt --filed 2026-08-21 --json
-```
-
-`fetch` saves the PDF and, if `pdftotext` is installed, prints the rows. If it
-is not installed, open the saved PDF and read it directly: you can read PDFs.
-`parse` turns `pdftotext -layout` text into rows. Check the row count against
-the PDF when a report runs over several pages.
-
-## Example: a real alert
-
-```
-NEW Periodic Transaction Report: Hon. Nancy Pelosi (CA11) filed 2026-08-21, doc 20035143
-  - spouse purchase, Bloom Energy Corporation Class A Common Stock (BE): 100 call
-    options, $100 strike, expires 2027-06-17, $1,000,001 - $5,000,000, traded
-    2026-07-24, disclosed 28 days later
-```
-
-The same PTR also shows 10,000 and 5,000 BE shares, a second block of 100 BE
-calls on 07/28, Intel shares and 50 Intel calls ($50 strike, 6/17/27), and a
-private real estate LLC with no ticker. Her other 2026 PTRs: 20033725
-(01/23), 20034836 (06/23, Intel and Uber calls) and 20035553 (10/02, a real
-estate LLC). Then: "This is a public disclosure filed 28 days after the trade.
-It says what Paul Pelosi bought in July, not what anyone will buy next."
-
-If the user wants to act on it, it goes the long way: a disclosure is weeks
-old, so it is a reason to look at a chart, not a setup. `/trader-scanner`
-and `/trader-entry` decide if there is a trade today; then shares only (the
-config has `allow_options: false`), sized by `/trader-budget`, checked by
-`/trader-risk`, placed by `/trader-broker` only after their yes.
-
-## The Senate: the manual route
-
-Senate reports live at `https://efdsearch.senate.gov`. Before searching, the
-site asks you to tick a box agreeing to the legal limits on how the reports
-may be used. That is an agreement for the person to accept, so this skill
-does not click it or automate it. The route:
-
-1. The user opens `https://efdsearch.senate.gov/search/` in their browser and
-   accepts the agreement themselves.
-2. They pick the report type "Periodic Transactions", type the senator's last
-   name, set the date range and search.
-3. They open the report: electronic filings show a table of transactions,
-   paper filings are scanned images.
-4. They paste the table (or a screenshot, or the saved page) into the chat,
-   and you write it up in the same shape as the House rows, with the report
-   link, and the same 45-day caveat.
+94 bulk and block deals; 72 were same-day round trips and were dropped. Kept:
+Societe Generale ODI and Goldman Sachs bought 61,76,351 Lenskart shares each in
+block deals at Rs 725 (about Rs 448 cr each) while Steadview Capital sold, on a
+day 58 % of Lenskart's volume was delivered. DII net sold Rs 2,760 cr and
+FII / FPI net bought Rs 5,673 cr (provisional). 121 SAST disclosures, 27
+highlighted, among them Nippon India Mutual Fund crossing 5 % of Swiggy
+(4.99 % to 5.17 %).
 
 ## What it never does
 
-- Never says or implies a member has inside information, or that copying a
-  politician beats the market. No return claims.
-- Never presents a range as an exact dollar figure or a tracker's date as the
-  trade date.
-- Never places an order, and never copies options trades.
-- Never automates the Senate agreement or any login.
+- Never calls a language model or any AI API.
+- Never invents a number: every figure is copied from the exchange's own data.
+- Never hammers a server: one request per feed, a pause between requests, and
+  at most `--max-xbrl` (25) XBRL files per feed per run.
 
 ## Safety
 
@@ -153,6 +116,6 @@ does not click it or automate it. The route:
   Deny" card appears too. Never "Always allow" an order tool.
 - No options, margin, shorting or leverage unless the config allows it and
   the user confirms.
-- Congressional trades are PUBLIC disclosures filed up to 45 days after the
-  trade (STOCK Act). This skill reads them fast; it has no inside
+- Bulk, block, insider, SAST and pledge data are PUBLIC disclosures that
+  arrive after the trade. This skill reads them fast; it has no inside
   information, and it says so.
