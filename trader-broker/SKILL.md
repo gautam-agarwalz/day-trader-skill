@@ -171,7 +171,7 @@ that draft orders to Needs approval too.
      open, nested true) shows them; `cancel_order_by_id` each one (Needs
      approval). Then `place_stock_order` with the ticket, then `result`.
 
-## Example: the reel
+## Example: the reel (a past New York run, before the NSE switch)
 
 ```
 ORDER 1 of 1, PAPER account, Alpaca

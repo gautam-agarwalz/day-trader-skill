@@ -19,7 +19,7 @@ argument-hint: "[--only deals,insider,sast,pledge,shareholding,fiidii,amfi]"
 # trader-pelosi
 
 The folder keeps its old name so installs and links keep working. The US
-Congress tracker it held is gone: this is now an Indian smart money and
+tracker it held is gone: this is now an Indian smart money and
 institutional tracker. Everything it reads is a public disclosure from NSE or
 AMFI. Fast, not early: a disclosure arrives after the trade, sometimes days
 after. There is no inside information here. Say that every time.

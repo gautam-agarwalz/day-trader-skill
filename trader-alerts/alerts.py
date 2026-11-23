@@ -56,6 +56,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import nse_data  # noqa: E402  (NSE's official MCP servers + the backup hook; this folder)
+import india_signals  # noqa: E402  (what trader-news and trader-pelosi know about a symbol)
 
 HHMM = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
 
@@ -250,8 +251,9 @@ def _read(path, default):
 
 # ---------------------------------------------------------------- rules
 
-PRICE_TYPES = {"above", "below", "stop", "target", "pct_move", "opening_bell", "time"}
-NO_QUOTE = {"opening_bell", "time"}
+PRICE_TYPES = {"above", "below", "stop", "target", "pct_move", "opening_bell", "time", "catalyst"}
+NO_QUOTE = {"opening_bell", "time", "catalyst"}
+CATALYST_TYPES = {"catalyst"}
 
 
 def _hhmm(text):
@@ -265,7 +267,7 @@ def validate(rule):
     t = rule.get("type")
     if t not in PRICE_TYPES:
         raise AlertError("rule %s: unknown type %r" % (rule.get("id"), t))
-    if t not in NO_QUOTE and not rule.get("symbol"):
+    if (t not in NO_QUOTE or t in CATALYST_TYPES) and not rule.get("symbol"):
         raise AlertError("rule %s needs a symbol" % rule.get("id"))
     if t in ("above", "below", "stop", "target") and not isinstance(rule.get("price"), (int, float)):
         raise AlertError("rule %s needs a numeric price" % rule.get("id"))
@@ -303,8 +305,9 @@ def ring_time(rule, status):
     return at
 
 
-def evaluate(rules, quotes, status, state, now_utc):
-    """Pure function. Returns (rings, new_state). Each ring: {id, symbol, message}."""
+def evaluate(rules, quotes, status, state, now_utc, signals=None):
+    """Pure function. Returns (rings, new_state). Each ring: {id, symbol, message}.
+    signals: {SYMBOL: [catalyst / smart-money items]} for "catalyst" rules (india_signals)."""
     state = json.loads(json.dumps(state or {}))
     rung = state.setdefault("rung", {})
     today = status["date"]
@@ -317,6 +320,19 @@ def evaluate(rules, quotes, status, state, now_utc):
         if not active(r, today):
             continue
         typ = {"stop": "below", "target": "above"}.get(r["type"], r["type"])
+        if typ == "catalyst":
+            sym = nse_data.nse_symbol(r["symbol"])
+            seen = state.setdefault("seen_items", {}).setdefault(rid, [])
+            fresh = [i for i in (signals or {}).get(sym, []) if i["id"] not in seen]
+            for i in fresh[:5]:
+                what = "filing" if i["kind"] == "catalyst" else "smart money"
+                rings.append({"id": rid, "symbol": sym, "message": "%s new %s (%s): %s %s" % (
+                    sym, what, i["tag"] or i["category"] or i["source"], i["title"][:150], i["link"])})
+            if fresh:
+                seen.extend(i["id"] for i in fresh)
+                del seen[:-300]
+                rung[rid] = stamp
+            continue
         if typ == "opening_bell":
             if status["open"] and not _rang_today(rung.get(rid), today):
                 rings.append({"id": rid, "symbol": "", "message": "Opening bell: the NSE is open (%s IST)%s."
@@ -393,6 +409,8 @@ def rules_from_plan(plan, cfg_flat_by=None):
         raise AlertError("the plan's flat_by %r is not a time like 15:15" % flat)
     out.append({"id": "%s-flat-by" % sym.lower(), "symbol": sym, "type": "time", "at": flat,
                 "label": "flat by close", "before_close": True})
+    out.append({"id": "%s-catalysts" % sym.lower(), "symbol": sym, "type": "catalyst",
+                "note": "new filings and smart-money items (trader-news / trader-pelosi)"})
     if plan.get("date"):
         for r in out:
             r["date"] = str(plan["date"])
@@ -475,7 +493,15 @@ def cmd_check(a):
     syms = _dedupe([nse_data.nse_symbol(r.get("symbol", "")) for r in watched if r.get("type") not in NO_QUOTE])
     quotes, errors = (get_quotes(syms, a.offline) if syms else ({}, []))
     state = _read(a.state, {})
-    rings, state = evaluate(rules, quotes, status, state, now)
+    signals = {}
+    if any(r.get("type") in CATALYST_TYPES for r in watched):
+        items = india_signals.load_all()
+        for r in watched:
+            if r.get("type") in CATALYST_TYPES:
+                sym = nse_data.nse_symbol(r["symbol"])
+                sig = india_signals.signals_for(sym, to_ist(now), items=items)
+                signals[sym] = sig["catalysts"] + sig["smart_money"]
+    rings, state = evaluate(rules, quotes, status, state, now, signals)
     if not a.no_write:
         _write(a.state, state)
         if quotes:
@@ -525,6 +551,10 @@ def cmd_add(a):
         return 0
     if a.opening_bell:
         rule = {"id": a.id or "opening-bell", "type": "opening_bell"}
+    elif a.catalysts:
+        sym = nse_data.nse_symbol(a.catalysts)
+        rule = {"id": a.id or "%s-catalysts" % sym.lower(), "type": "catalyst", "symbol": sym,
+                "note": "new filings and smart-money items (trader-news / trader-pelosi)"}
     elif a.at:
         if _hhmm(a.at) is None:
             raise AlertError("--at wants an India time (IST) like 15:15")
@@ -631,6 +661,8 @@ def main(argv=None):
     g.add_argument("--target", type=float)
     g.add_argument("--pct", type=float)
     g.add_argument("--opening-bell", action="store_true")
+    g.add_argument("--catalysts", metavar="SYMBOL",
+                   help="ring on every new filing or smart-money item for SYMBOL (needs news.py / smartmoney.py runs)")
     g.add_argument("--at", metavar="HH:MM", help="a time alert, India time (IST)")
     g.add_argument("--from-plan", action="store_true", help="stop, target and flat-by-close from the plan")
     p.add_argument("--plan", default="trader/plan.json")

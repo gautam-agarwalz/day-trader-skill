@@ -97,7 +97,7 @@ and the max loss at the stop. Say plainly that a stop is an order, not a
 promise: in a fast market it can fill below the stop. Then hand over to
 `/trader-risk`.
 
-## Example: the reel
+## Example: the reel (a past New York run, before the NSE switch)
 
 TSLA on Monday 2026-10-19. Opening-range breakout: entry 364.18 at 10:15 AM,
 stop 358.32 (the opening-range midpoint), target 370.04 (1R). Risk 5.86 a

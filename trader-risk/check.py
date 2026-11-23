@@ -66,6 +66,9 @@ import os
 import re
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import india_signals  # noqa: E402  (what trader-news and trader-pelosi know about a symbol)
+
 DEFAULTS = {
     "budget": None, "cash_buffer_pct": 10, "max_position_pct": 75, "max_order_inr": 4000,
     "min_order_inr": 5, "max_loss_per_trade_inr": 50, "max_daily_loss_inr": 150, "max_trades_per_day": 3,
@@ -758,6 +761,20 @@ def load_prices(pdoc):
     return out, times
 
 
+def add_catalyst_warnings(res, now_utc):
+    """Warnings (never blocks) from what trader-news / trader-pelosi saved on each order's stock."""
+    seen = set()
+    for r in res.get("results", []):
+        sym = r.get("symbol")
+        if not sym or sym in seen or r.get("kind") == "exit":
+            continue
+        seen.add(sym)
+        sig = india_signals.signals_for(sym, to_ist(now_utc))
+        for f in india_signals.risk_flags(sig, to_ist(now_utc)):
+            res["warnings"].append("%s catalyst: %s (%s)" % (sym, f["flag"], f["why"]))
+    return res
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Check proposed orders against your limits (trader-risk).")
     ap.add_argument("--orders", default="trader/orders.json")
@@ -786,6 +803,7 @@ def main(argv=None):
         prices, times = load_prices(pdoc)
         state = read_json(a.state, "broker state", required=False)
         res = check(orders, cfg, portfolio, prices, state, a.today, now, times)
+        add_catalyst_warnings(res, now)
         if pdoc.get("as_of"):
             res["prices_as_of"] = pdoc["as_of"]
         if not a.no_write:

@@ -62,6 +62,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import india_signals  # noqa: E402  (what trader-news and trader-pelosi know about a symbol)
+
 UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Jakeschincariol/day-trader-skill)"
 PAUSE = 0.5      # seconds between requests to the free endpoint
 BACKOFF = 5.0    # seconds before the one retry after an HTTP 429
@@ -792,11 +795,17 @@ def cmd_check(a):
     sym = a.symbol.upper()
     chart, now = _load(a, sym, parse_now(a.now) if a.now else None)
     res = evaluate(chart, now, **opts)
+    sig_lines, sig, flags = india_signals.describe(sym, to_ist(now))
     if a.write:
         write_json(a.write, entry_doc(res, now))
     if a.json:
-        print(json.dumps(public(res), indent=2))
+        out = public(res)
+        if sig_lines:
+            out["catalyst_flags"] = flags
+        print(json.dumps(out, indent=2))
     else:
+        for line in sig_lines:
+            print(line)
         for line in describe(res):
             print(line)
         if a.write:
@@ -834,6 +843,9 @@ def cmd_watch(a):
 
     def emit(line):
         print(line, flush=True)
+
+    for line in india_signals.describe(sym, to_ist(now_fn()))[0]:
+        emit(line)
 
     code, _ = watch_loop(provider, now_fn, sleep_fn, emit, opts, every=a.every, until=until,
                          on_trigger=on_trigger)

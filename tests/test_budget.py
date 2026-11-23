@@ -25,7 +25,6 @@ CONTRACT_CFG = {
     "no_entries_before": "09:30", "no_entries_after": "14:50", "flat_by": "15:15",
     "fractional": False, "broker": "alpaca", "paper": True, "blocked": [],
     "allow_options": False, "allow_margin": False, "allow_short": False, "pdt_guard": False,
-    "sec_user_agent": "Your Name you@example.com",
 }
 # v1's rules, for the weights mode tests
 V1 = {"budget": 5000, "cash_buffer_pct": 10, "max_position_pct": 25, "max_order_inr": 2000, "min_order_inr": 5,

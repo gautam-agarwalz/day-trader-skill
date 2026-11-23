@@ -108,11 +108,13 @@ grid). A live in-progress bar is never used.
 4. If the verdict is a coin flip or close to break-even, say so plainly. Do
    not dress it up. If the history and the replays disagree, say that too.
 5. Say once that this is built from the last 60 days and is not a prediction.
-   Earnings, news and halts can do things those 60 days never did. Check
-   `/trader-news` for the stock before going on.
+   Results, news and halts can do things those 60 days never did. When
+   `/trader-news` or `/trader-pelosi` saved something on the stock, the verdict
+   notes say "Event on SYMBOL": these replays are ordinary days, and an event
+   day can move further than any of them. Say that out loud.
 6. If the user still wants the trade, hand off to `/trader-budget` to size it.
 
-## Example: the reel
+## Example: the reel (a past New York run, before the NSE switch)
 
 TSLA, Monday 2026-10-19. The 15-minute opening range is 354.47 to 362.18.
 The 10:10 bar closes above it: entry 364.18 at 10:15 AM (bar 8), stop 358.32

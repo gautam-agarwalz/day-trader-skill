@@ -56,8 +56,9 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import india_http as ih  # noqa: E402
+import india_results as ir  # noqa: E402
 
-SOURCES = ("nse_api", "nse_rss", "bse", "sebi", "surveillance", "ir")
+SOURCES = ("nse_api", "nse_rss", "bse", "sebi", "surveillance", "upcoming", "ir")
 NSE_RSS = {"announcements": "Online_announcements.xml", "results": "Financial_Results.xml",
            "board_meetings": "Board_Meetings.xml", "corporate_actions": "Corporate_action.xml",
            "annual_reports": "Annual_Reports.xml", "circulars": "Circulars.xml", "buyback": "Daily_Buyback.xml"}
@@ -227,15 +228,79 @@ def pdf_text(data, pages=2):
     return text
 
 
+MONTH = {m: i for i, m in enumerate(("january", "february", "march", "april", "may", "june", "july", "august",
+                                     "september", "october", "november", "december"), 1)}
+
+
+def period_named(text):
+    """'quarter ended September 30, 2026' / '30th September, 2026' / '30.09.2026' -> 'YYYY-MM-DD' or None."""
+    t = text or ""
+    m = re.search(r"ended\s+(?:on\s+)?([A-Za-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})", t, re.I)
+    if m and m.group(1).lower() in MONTH:
+        return "%s-%02d-%02d" % (m.group(3), MONTH[m.group(1).lower()], int(m.group(2)))
+    m = re.search(r"ended\s+(?:on\s+)?(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]+),?\s+(\d{4})", t, re.I)
+    if m and m.group(2).lower() in MONTH:
+        return "%s-%02d-%02d" % (m.group(3), MONTH[m.group(2).lower()], int(m.group(1)))
+    m = re.search(r"ended\s+(?:on\s+)?(\d{1,2})[./-](\d{1,2})[./-](\d{4})", t, re.I)
+    if m:
+        return "%s-%02d-%02d" % (m.group(3), int(m.group(2)), int(m.group(1)))
+    return None
+
+
+def results_numbers(client, symbol, day, text=""):
+    """The quarter a company filed on `day` (YYYY-MM-DD), from its integrated-filing XBRL, with the
+    change on the same quarter a year earlier. Exact figures, no PDF. {} when there is none."""
+    rows = ir.filings(client.nse_api(ir.INTEGRATED + "&symbol=" + symbol, "nse_results_%s.json" % ih.safe_name(symbol)))
+    picks = ir.pick_quarters(rows)
+    d0 = ir._date(day)
+    named = period_named(text)
+    filed = [f for f in picks if named and f["quarter_end"] == named]
+    if not filed:
+        filed = [f for f in picks if d0 and f["broadcast"] and abs((ir._date(f["broadcast"][:10]) - d0).days) <= 3]
+    if not filed:
+        return {"note": "the XBRL for this filing is not on NSE yet"}
+    f = filed[0]
+
+    def quarter(fl):
+        x = ir.parse_results_xbrl(client.get_text(fl["xbrl"], ih.safe_name(fl["xbrl"].rsplit("/", 1)[-1])))
+        return x
+    cur = quarter(f)
+    if not cur["quarter"]:
+        return {}
+    q = cur["quarter"]
+    out = {"quarter_end": f["quarter_end"], "nature": cur["nature"].lower(), "revenue_cr": ir.crore(q.get("revenue")),
+           "profit_cr": ir.crore(q.get("profit")), "eps": q.get("eps"), "source": "XBRL"}
+    ly = [p for p in picks if p["quarter_end"] and abs((ir._date(f["quarter_end"]) - ir._date(p["quarter_end"])).days - 365) <= 10]
+    if ly:
+        prev = quarter(ly[0])["quarter"]
+        out["revenue_yoy"] = ir.pct(q.get("revenue"), prev.get("revenue"))
+        out["profit_yoy"] = ir.pct(q.get("profit"), prev.get("profit"))
+    return out
+
+
 def add_pdf_numbers(client, items, args, notes):
-    """For new results / buyback items with a PDF: download and pull the headline numbers."""
+    """For new results items: the exact quarter from NSE's XBRL (the PDF only when there is no
+    symbol or no XBRL). For new buyback items with a PDF: the price and size by regex."""
     if args.no_pdf:
         return
     done, found = 0, 0
     for it in items:
         if done >= args.pdf_max:
             break
-        if not it.get("new") or not set(it["tags"]) & {"results", "buyback"} or not it["link"].lower().endswith(".pdf"):
+        if not it.get("new") or not set(it["tags"]) & {"results", "buyback"}:
+            continue
+        if it["tag"] == "results" and it.get("symbol") and not it.get("event_date"):
+            done += 1
+            try:
+                nums = results_numbers(client, it["symbol"], (it["time"] or "")[:10], it["detail"])
+            except ih.FeedError as e:
+                nums = {"note": "XBRL: %s" % str(e)[:100]}
+            nums = {k: v for k, v in nums.items() if v is not None}
+            if nums.get("revenue_cr") is not None or nums.get("profit_cr") is not None:
+                it["numbers"] = nums
+                found += 1
+                continue
+        if not it["link"].lower().endswith(".pdf"):
             continue
         done += 1
         try:
@@ -253,7 +318,8 @@ def add_pdf_numbers(client, items, args, notes):
             found += 1
         it["numbers"] = nums
     if done:
-        notes.append("pdf: read %d results / buyback PDF(s), headline numbers found in %d" % (done, found))
+        notes.append("numbers: read %d results / buyback filing(s) (XBRL first, PDF otherwise), numbers found in %d"
+                     % (done, found))
 
 
 # ---------------------------------------------------------------- NSE
@@ -479,6 +545,25 @@ def ir_items(symbol, page_url, html):
     return out
 
 
+def upcoming_items(rows, today):
+    """NSE's event calendar -> scheduled board meetings from today on, tagged by purpose (results,
+    buyback, fundraise...): the early signals."""
+    out = []
+    for m in ir.board_meetings(rows):
+        if m["date"] < today:
+            continue
+        text = "%s %s" % (m["purpose"], m["desc"])
+        tags = tags_for(text)
+        if re.search(r"fund ?rais|preferential|qualified institutions|\bQIP\b|rights", text, re.I) and "orders" not in tags:
+            tags = [t for t in tags if t != "other"] + ["orders"]
+        out.append(item(id="upcoming|%s|%s|%s" % (m["symbol"], m["date"], m["purpose"]), source="NSE event calendar",
+                        tags=tags, symbol=m["symbol"], title="%s: board meeting on %s to consider %s" % (
+                            m["symbol"], m["date"], (m["purpose"] or "business").lower()),
+                        detail=m["desc"][:300], time=today + " 00:00", event_date=m["date"],
+                        link=ih.NSE + "/companies-listing/corporate-filings-event-calendar", flags=["scheduled " + m["date"]]))
+    return out
+
+
 def collect_ir(client, path, notes):
     cfg = ih.load_json(path)
     if not cfg:
@@ -548,6 +633,8 @@ def collect(client, args, state):
         return rss_items(entries, "SEBI RSS", "sebi")
     run("sebi", sebi)
     run("surveillance", lambda: collect_surveillance(client, state, notes))
+    run("upcoming", lambda: upcoming_items(client.nse_api(ir.CALENDAR, "nse_event_calendar.json"),
+                                            ih.now_ist().strftime("%Y-%m-%d")))
     run("ir", lambda: collect_ir(client, args.ir_watchlist, notes))
 
     # one filing, one item (the API and the RSS carry the same PDFs); the API row wins
@@ -594,8 +681,9 @@ def render(shown, notes):
                 out.append(line)
             nums = {k: v for k, v in (r.get("numbers") or {}).items()}
             if nums:
-                out.append("      numbers (first pages, as printed): " +
-                           ", ".join("%s %s" % (k.replace("_", " "), v) for k, v in nums.items()))
+                src = "NSE XBRL, Rs crore" if nums.get("source") == "XBRL" else "first PDF pages, as printed"
+                out.append("      numbers (%s): " % src +
+                           ", ".join("%s %s" % (k.replace("_", " "), v) for k, v in nums.items() if k != "source"))
             if r["link"]:
                 out.append("      %s" % r["link"])
     if not shown:

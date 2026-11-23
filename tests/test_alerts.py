@@ -263,7 +263,8 @@ class Rules(unittest.TestCase):
     def test_the_plan_gives_a_stop_a_target_and_flat_by_close(self):
         rules = plan_rules()
         self.assertEqual([(r["id"], r["type"]) for r in rules],
-                         [("tsla-plan-stop", "stop"), ("tsla-plan-target", "target"), ("tsla-flat-by", "time")])
+                         [("tsla-plan-stop", "stop"), ("tsla-plan-target", "target"), ("tsla-flat-by", "time"),
+                          ("tsla-catalysts", "catalyst")])
         self.assertEqual((rules[0]["price"], rules[1]["price"]), (358.32, 370.04))
         self.assertEqual((rules[2]["at"], rules[2]["label"], rules[2]["before_close"]), ("15:15", "flat by close", True))
         self.assertTrue(all(r["date"] == "2026-10-19" for r in rules))
@@ -319,8 +320,22 @@ class Rules(unittest.TestCase):
             rules = json.load(fh)["rules"]
         for r in rules:
             alerts.validate(r)
-        self.assertEqual([r for r in rules if r["id"].startswith("tsla-plan") or r["id"] == "tsla-flat-by"],
+        self.assertEqual([r for r in rules if r["id"].startswith("tsla-plan") or r["id"] in ("tsla-flat-by", "tsla-catalysts")],
                          [dict(r, date="2026-10-19") for r in plan_rules()])
+
+    def test_a_catalyst_rule_rings_once_per_item(self):
+        rule = [{"id": "tcs-catalysts", "type": "catalyst", "symbol": "TCS"}]
+        item = {"id": "nse|/x.pdf", "kind": "catalyst", "tag": "orders", "category": "", "source": "NSE announcements",
+                "title": "TCS: Bagging/Receiving of orders/contracts", "link": "https://nsearchives.nseindia.in/x.pdf"}
+        rings, st = alerts.evaluate(rule, {}, self.open, {}, self.now, {"TCS": [item]})
+        self.assertEqual(len(rings), 1)
+        self.assertIn("TCS new filing (orders): TCS: Bagging/Receiving of orders/contracts", rings[0]["message"])
+        self.assertEqual(alerts.evaluate(rule, {}, self.open, st, self.now, {"TCS": [item]})[0], [])
+        more = dict(item, id="pelosi|1", kind="smart_money", tag="", category="Bulk/Block deal", title="X bought TCS")
+        rings, _ = alerts.evaluate(rule, {}, self.open, st, self.now, {"TCS": [item, more]})
+        self.assertEqual([r["message"][:37] for r in rings], ["TCS new smart money (Bulk/Block deal)"])
+        with self.assertRaises(alerts.AlertError):
+            alerts.validate({"id": "x", "type": "catalyst"})
 
     def test_bad_rules(self):
         with self.assertRaises(alerts.AlertError):
@@ -358,7 +373,7 @@ class Cli(unittest.TestCase):
         self.assertEqual(code, 0)                                      # the opening bell rings first
         code, text, _ = self.check("2026-10-19 10:38")
         self.assertEqual(code, 1)
-        self.assertIn("Nothing hit. 4 rule(s) watched today, TSLA ₹366.48.", text)
+        self.assertIn("Nothing hit. 5 rule(s) watched today, TSLA ₹366.48.", text)
         with open(self.prices) as fh:
             doc = json.load(fh)
         self.assertEqual(doc["prices"], {"TSLA": 366.475})
@@ -381,7 +396,7 @@ class Cli(unittest.TestCase):
         code, text, _ = run(["add", "--from-plan", "--plan", PLAN, "--rules", self.rules, "--state", self.state])
         with open(self.rules) as fh:
             ids = [r["id"] for r in json.load(fh)["rules"]]
-        self.assertEqual(sorted(ids), ["opening-bell", "tsla-flat-by", "tsla-plan-stop", "tsla-plan-target"])
+        self.assertEqual(sorted(ids), ["opening-bell", "tsla-catalysts", "tsla-flat-by", "tsla-plan-stop", "tsla-plan-target"])
         with open(self.state) as fh:
             self.assertNotIn("tsla-flat-by", json.load(fh)["rung"])
 

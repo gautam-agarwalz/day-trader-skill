@@ -49,6 +49,9 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import india_signals  # noqa: E402  (what trader-news and trader-pelosi know about a symbol)
 from decimal import Decimal, InvalidOperation, ROUND_FLOOR, ROUND_HALF_UP
 
 UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Jakeschincariol/day-trader-skill)"
@@ -599,6 +602,9 @@ def build_plan(a, now_utc):
     today = to_ist(now_utc).date()
     if day != today:
         warnings.append("This plan is for %s, not today (%s)." % (day.isoformat(), today.isoformat()))
+    _, _, flags = india_signals.describe(plan["symbol"], to_ist(now_utc))
+    for f in flags:
+        warnings.append("Catalyst (trader-news / trader-pelosi): %s: %s." % (f["flag"], f["why"]))
     return plan, warnings
 
 

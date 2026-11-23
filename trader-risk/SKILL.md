@@ -103,10 +103,19 @@ Warnings do not block, but say them to the user: a LIVE account, a number
 sent as a number instead of a string, a stop that lives only in the plan and
 not at the broker, a price too old to use, an early close today.
 
+## Catalysts
+
+When `/trader-news` and `/trader-pelosi` have run, each order's stock is
+checked against what they saved: results due today or tomorrow, results out
+today, an ASM / GSM entry, a price band of 5 % or less, an auditor resigning,
+promoter selling, a pledge invoked or raised, institutional or insider buying.
+Each one is printed as a WARNING with its reason. None of them blocks an
+order (the user's choice); say them before asking for the yes.
+
 ## Steps
 
 1. If the price may have moved since the plan, refresh it first
-   (trader-alerts: `alerts.py quote TSLA --write`).
+   (trader-alerts: `alerts.py quote RELIANCE --write`).
 2. Run `check.py`. Exit code 0 means every order passed, 1 means at least one
    was blocked.
 3. Tell the user the result in plain words, order by order: the max loss at
@@ -118,7 +127,7 @@ not at the broker, a price too old to use, an early close today.
    each order to its verdict by fingerprint, so an edited order is not ready
    until it passes again, and a verdict from yesterday does not count today.
 
-## Example: the reel
+## Example: the reel (a past New York run, before the NSE switch)
 
 The TSLA bracket from trader-budget at 10:15 AM on Monday 2026-10-19, on a
 fresh $5,000 paper account with the example config:

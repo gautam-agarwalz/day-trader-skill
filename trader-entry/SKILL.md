@@ -2,7 +2,7 @@
 name: trader-entry
 description: >-
   Entry Timer. Watches a setup bar by bar and tells you the moment to get in.
-  Reads free Yahoo 1-minute or 5-minute bars, builds the opening range (the
+  Reads free Yahoo 1-minute or 5-minute bars (NSE symbols as SYMBOL.NS), builds the opening range (the
   first 15 minutes by default) and calls the entry on the first completed bar
   that CLOSES above the range high, or above a level you give it (like a
   20-day high from the scanner), with an optional volume check. Says waiting
@@ -76,7 +76,10 @@ day bar by bar without waiting.
 ## Steps
 
 1. Get the symbol from the user, or run `entry.py watchlist` after
-   `/trader-scanner`. Check `/trader-news` for it first.
+   `/trader-scanner`. `entry.py check` and `watch` print the symbol's
+   catalysts first (from `/trader-news` and `/trader-pelosi`: results due, a
+   price-band cut, ASM, a block deal, promoter selling); read them out. They
+   are warnings only: the entry rule does not change.
 2. Run `entry.py check SYMBOL`. Tell the user the status in one line:
    waiting and how far, triggered at what time and price, or expired.
 3. To wait for it, Claude can run `entry.py watch SYMBOL --until 14:50` in
@@ -91,7 +94,7 @@ day bar by bar without waiting.
 5. Hand off to `/trader-exit` to set the stop and the target BEFORE anything
    is bought.
 
-## Example: the reel
+## Example: the reel (a past New York run, before the NSE switch)
 
 TSLA, Monday 2026-10-19, 5-minute bars. The opening range is 354.47 to
 362.18. At 10:12 the 10:10 bar is still open, so it waits:

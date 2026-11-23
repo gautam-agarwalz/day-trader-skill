@@ -79,6 +79,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import nse_data  # noqa: E402  (NSE's official MCP servers + the backup hook; this folder)
+import india_signals  # noqa: E402  (what trader-news and trader-pelosi know about a symbol)
 
 UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Jakeschincariol/day-trader-skill)"
 YAHOO_HOSTS = ("https://query2.finance.yahoo.com", "https://query1.finance.yahoo.com")
@@ -781,6 +782,35 @@ def write_json(path, doc):
         fh.write("\n")
 
 
+def annotate_hits(hits, now_utc):
+    """Each hit gets the catalysts, smart-money items and risk flags trader-news / trader-pelosi
+    saved for it (only when there are some). Returns [(symbol, one-line summary)]."""
+    now = to_ist(now_utc)
+    items = india_signals.load_all()
+    lines = []
+    if not items:
+        return lines
+    for h in hits:
+        sig = india_signals.signals_for(h["symbol"], now, items=items)
+        flags = india_signals.risk_flags(sig, now)
+        if not (sig["catalysts"] or sig["smart_money"]):
+            continue
+        h["catalysts"] = [{"time": c["time"], "tag": c["tag"], "title": c["title"], "link": c["link"]}
+                          for c in sig["catalysts"][:3]]
+        h["smart_money"] = [{"time": s["time"], "category": s["category"], "title": s["title"], "link": s["link"]}
+                            for s in sig["smart_money"][:3]]
+        h["flags"] = [f["flag"] for f in flags]
+        lines.append((h["symbol"], india_signals.summary(sig, flags)))
+    return lines
+
+
+def print_catalysts(lines):
+    if lines:
+        print("Catalysts on these charts (trader-news / trader-pelosi):")
+        for sym, text in lines:
+            print("  %-10s %s" % (sym, text))
+
+
 def money(x):
     return "₹{:,.2f}".format(x)
 
@@ -829,6 +859,7 @@ def cmd_daily(a):
         doc["from_backup"] = backup
     if a.offline:
         doc["offline"] = os.path.basename(a.offline.rstrip("/"))
+    cat_lines = annotate_hits(hits, now)
     if not a.no_write:
         write_json(a.out, doc)
     if a.json:
@@ -861,7 +892,8 @@ def cmd_daily(a):
         print("  ... and %d more in the watchlist (--show N for more)." % (len(hits) - a.show))
     if not a.no_write:
         print("Wrote %s (mode daily, %d hit%s)." % (a.out, len(hits), "" if len(hits) == 1 else "s"))
-    print(NOTE + " Next: pick one chart, then /trader-news TICKER.")
+    print_catalysts(cat_lines)
+    print(NOTE + " Next: pick one chart, then /trader-news --mine and /trader-pelosi for it.")
     return 0 if hits else 1
 
 
@@ -921,6 +953,7 @@ def cmd_orb(a):
            "filters": {"min_price": a.min_price, "min_volume": a.min_volume}, "note": NOTE, "hits": hits}
     if a.offline:
         doc["offline"] = os.path.basename(a.offline.rstrip("/"))
+    cat_lines = annotate_hits(hits, now)
     if not a.no_write:
         write_json(a.out, doc)
     if a.json:
@@ -950,7 +983,8 @@ def cmd_orb(a):
         print("No chart closed above its opening-range high by %s." % clock_label(cutoff))
     if not a.no_write:
         print("Wrote %s (mode orb, %d hit%s)." % (a.out, len(hits), "" if len(hits) == 1 else "s"))
-    print(NOTE + " Next: pick one chart, then /trader-news TICKER and /trader-entry TICKER.")
+    print_catalysts(cat_lines)
+    print(NOTE + " Next: pick one chart, then /trader-news --mine, /trader-pelosi and /trader-entry TICKER.")
     return 0 if hits else 1
 
 

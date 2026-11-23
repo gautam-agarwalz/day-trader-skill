@@ -78,6 +78,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import india_signals  # noqa: E402  (what trader-news and trader-pelosi know about a symbol)
+
 UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Jakeschincariol/day-trader-skill)"
 PAUSE = 0.5          # seconds between requests: be polite to free endpoints
 BACKOFF = 5.0        # seconds to wait once after a 429
@@ -866,8 +869,23 @@ def compute(a):
     return time_machine(text, plan, now, a.replays, a.seed, a.window, a.until, source)
 
 
+def event_notes(doc, now_utc):
+    """When trader-news / trader-pelosi saved something on the plan's stock, say so: these replays
+    are ordinary days, and an event day is not one."""
+    sym = (doc.get("plan") or {}).get("symbol")
+    if not sym:
+        return []
+    sig = india_signals.signals_for(sym, to_ist(now_utc))
+    flags = india_signals.risk_flags(sig, to_ist(now_utc))
+    if not (sig["catalysts"] or sig["smart_money"]):
+        return []
+    return ["Event on %s: %s. These replays are drawn from ordinary days; a day with news can move "
+            "further than any of them. Read the filing before trusting the odds." % (sym, india_signals.summary(sig, flags))]
+
+
 def cmd_run(a):
     doc = compute(a)
+    doc["verdict_notes"] = list(doc.get("verdict_notes") or []) + event_notes(doc, parse_now(a.now))
     if a.write:
         _write(a.write, doc)
     if a.json:

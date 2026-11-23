@@ -121,11 +121,29 @@ class Repo(unittest.TestCase):
         self.assertFalse(any(r.startswith(("yfinance", "pandas-datareader")) for r in reqs))
 
     def test_one_india_http_layer_shared_by_smart_money_and_catalysts(self):
-        with open(os.path.join(ROOT, "trader-pelosi", "india_http.py"), encoding="utf-8") as fh:
-            a = fh.read()
-        with open(os.path.join(ROOT, "trader-news", "india_http.py"), encoding="utf-8") as fh:
-            b = fh.read()
-        self.assertEqual(a, b, "copy trader-pelosi/india_http.py over trader-news/india_http.py")
+        for name, folders in (("india_http.py", ("trader-pelosi", "trader-news", "trader-analyst")),
+                              ("india_results.py", ("trader-analyst", "trader-news"))):
+            with open(os.path.join(ROOT, folders[0], name), encoding="utf-8") as fh:
+                ref = fh.read()
+            for f in folders[1:]:
+                with open(os.path.join(ROOT, f, name), encoding="utf-8") as fh:
+                    self.assertEqual(fh.read(), ref, "copy %s/%s over %s/%s" % (folders[0], name, f, name))
+
+    def test_no_us_news_or_congress_sources_left(self):
+        """The tools and docs point at the Indian sources; only labelled past examples mention the US."""
+        bad = ("sec.gov", "edgar", "house clerk", "congress", "stooq", "nasdaqtrader", "sec_user_agent",
+               "periodic transaction report", "stock act")
+        paths = [os.path.join(ROOT, "README.md"), os.path.join(ROOT, ".claude-plugin", "marketplace.json")]
+        for s in SKILLS:
+            for f in os.listdir(os.path.join(ROOT, s)):
+                if f.endswith((".py", ".md", ".json")):
+                    paths.append(os.path.join(ROOT, s, f))
+        for path in paths:
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+            text = text.split("## Example: the reel (a past New York run")[0].lower()
+            for word in bad:
+                self.assertNotIn(word, text, "%s mentions %s" % (os.path.relpath(path, ROOT), word))
 
     def test_no_language_model_calls_and_no_us_feeds_in_the_indian_modules(self):
         for s in SKILLS:

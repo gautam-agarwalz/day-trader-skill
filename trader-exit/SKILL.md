@@ -81,12 +81,16 @@ A level setup has no opening range to lean on, so it needs a stop you name.
 4. If it refuses, say the reason and the fix (a wider stop, a farther
    target). Never loosen anything on your own.
 5. Say once that the stop is a plan, not a guarantee.
+6. Read out any "Catalyst" note: the plan's warnings carry what `/trader-news`
+   and `/trader-pelosi` saved on the stock (results due tonight: a gap can jump
+   the stop; a band cut to 5 %: the stock can lock at its circuit). Warnings
+   only: the plan is not changed.
 6. Hand off to `/trader-timemachine` to replay the plan, then `/trader-budget`
    to size it to the max loss per trade. Offer `/trader-alerts` for the stop,
    the target and the flat-by time. Claude can keep `entry.py watch` running
    in the background or on a `/loop` until a setup triggers, then come here.
 
-## Example: the reel
+## Example: the reel (a past New York run, before the NSE switch)
 
 TSLA, Monday 2026-10-19. The entry is 364.18 at 10:15 AM (the 10:10 bar,
 bar 8) and the opening range is 354.47 to 362.18. `exit.py plan --stop
