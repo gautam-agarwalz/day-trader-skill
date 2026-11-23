@@ -110,6 +110,7 @@ python3 "${CLAUDE_SKILL_DIR}/events.py" types                  # past events of 
 python3 "${CLAUDE_SKILL_DIR}/events.py" study --type order_win
 python3 "${CLAUDE_SKILL_DIR}/events.py" study --type results --session during --bucket "up 2-5%"
 python3 "${CLAUDE_SKILL_DIR}/events.py" suggest                # ideas from today's /trader-news and /trader-pelosi items
+python3 "${CLAUDE_SKILL_DIR}/events.py" plan 1 --write         # idea 1 -> trader/plan.json, swing mode
 ```
 
 It writes `trader/history/events.sqlite` and, for `suggest`,
@@ -177,9 +178,11 @@ For an event idea (`events.py suggest` or `study`): give the entry time, the
 stop and target, the exit, then the average, the winners, the 5 to 95 % range
 and the number of past trades, the out-of-sample line and the verdict, all as
 printed. Say that an overnight hold can gap through any stop, that the
-worst-5 % line is the real risk, and that it is history, not a forecast. The
-chain (exit, budget, risk) is still built for day trades: an overnight hold is
-the user's own decision until the swing mode lands.
+worst-5 % line is the real risk, and that it is history, not a forecast. If
+the user wants it, `events.py plan N --write` writes `trader/plan.json` in
+swing mode (exit_by, gap risk), and `/trader-budget`, `/trader-risk` and
+`/trader-alerts add --from-plan` take it from there. Risk blocks it until the
+user turns overnight holds on (`"swing": {"allow_overnight": true}`).
 
 ## Example: the reel (a past New York run, before the NSE switch)
 

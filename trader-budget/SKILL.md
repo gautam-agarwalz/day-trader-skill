@@ -61,6 +61,14 @@ If `trader/config.json` does not exist, copy `config.example.json` into
   **min_reward_risk** (1.0), **require_stop** (true), **no_entries_before** / **no_entries_after**
   ("09:30" / "14:50") and **flat_by** ("15:15"), all India time (IST).
 - **blocked**: tickers they never want to trade.
+- **swing** (overnight holds, off by default): `allow_overnight` (false),
+  `max_hold_days` (10 sessions), `max_loss_per_trade_inr` (50, counted on the
+  larger of the stop and the plan's `gap_risk_pct`), `max_overnight_inr`
+  (4,000 held overnight at most) and `no_entries_after` ("15:25": a swing
+  entry can wait for the close). A swing plan is sized on whichever binds:
+  the stop, the overnight gap, the overnight cap, or the usual limits. The
+  order says "delivery (CNC)" and its bracket legs are day orders: the stop
+  must be re-placed each morning (or kept as a GTT at the broker).
 - Keep **paper** true until they have watched it work on a paper account.
 
 ## Step 2: size the trade

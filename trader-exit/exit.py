@@ -34,6 +34,13 @@ or lose. On an early close it moves up with the close (NSE has none scheduled).
 "min_reward_risk" in the config (default 1.0) only warns here; trader-risk
 enforces it.
 
+Swing mode (--mode swing): an overnight or multi-day hold, e.g. an event idea from
+trader-timemachine's events.py (buy before the close for the next morning's gap).
+No flat-by: instead --exit-by YYYY-MM-DD or --hold N (sessions, default 1) sets the
+last session's close, and --gap-risk PCT (the worst-5 % loss from the event study)
+is saved so trader-budget sizes on the gap, not only the stop. trader-risk blocks a
+swing plan unless "swing": {"allow_overnight": true} is in trader/config.json.
+
 A stop is a plan, not a guarantee: a gap or a fast market can fill past it.
 Exit codes: plan 0 = a plan, 1 = refused or an error. show 0 = a plan exists.
 """
@@ -505,6 +512,41 @@ def resolve_flat_by(day, explicit, cfg, entry_time):
     return hm(t), note
 
 
+def next_sessions(day, n):
+    """The n-th NSE session after `day` (holidays and weekends skipped)."""
+    d = day
+    while n > 0:
+        d += datetime.timedelta(days=1)
+        if session(d):
+            n -= 1
+    return d
+
+
+def resolve_exit_by(day, a):
+    """Swing mode: (exit_by date, sessions held)."""
+    if a.exit_by and a.hold:
+        raise PlanError("give --exit-by or --hold, not both")
+    if a.exit_by:
+        try:
+            end = datetime.date.fromisoformat(a.exit_by)
+        except ValueError:
+            raise PlanError("--exit-by wants YYYY-MM-DD, not %r" % a.exit_by)
+        if end <= day:
+            raise PlanError("--exit-by %s is not after the entry day %s: that is a day trade" % (end, day))
+        if not session(end):
+            raise PlanError("--exit-by %s is not an NSE session" % end)
+        n, d = 0, day
+        while d < end:
+            d += datetime.timedelta(days=1)
+            if session(d):
+                n += 1
+        return end, n
+    n = a.hold if a.hold is not None else 1
+    if n < 1:
+        raise PlanError("--hold wants 1 or more sessions")
+    return next_sessions(day, n), n
+
+
 def gather(a):
     """The entry facts, from trader/entry.json or the flags."""
     if a.symbol and a.from_path:
@@ -573,7 +615,16 @@ def build_plan(a, now_utc):
         atr, atr_n = atr_of(bars)
     c = compute(info["entry"], stop_rule, stop_param, target_rule, target_param, info["or_high"], info["or_low"],
                 atr, atr_n)
-    flat_by, flat_note = resolve_flat_by(day, a.flat_by, cfg, entry_time)
+    swing = (a.mode or "day") == "swing"
+    if swing:
+        if a.flat_by:
+            raise PlanError("--flat-by is for day trades; a swing plan uses --exit-by or --hold")
+        flat_by, flat_note = None, ""
+        exit_by, hold = resolve_exit_by(day, a)
+    else:
+        if a.exit_by or a.hold or a.gap_risk is not None:
+            raise PlanError("--exit-by, --hold and --gap-risk are for --mode swing")
+        flat_by, flat_note = resolve_flat_by(day, a.flat_by, cfg, entry_time)
     orr = None
     if info["or_high"] is not None and info["or_low"] is not None:
         orr = {"high": float(cents(info["or_high"])), "low": float(cents(info["or_low"])),
@@ -586,6 +637,14 @@ def build_plan(a, now_utc):
             "target": float(c["target"]), "target_r": float(c["target_r"]), "target_label": c["target_label"],
             "risk_per_share": float(c["risk"]), "reward_risk": float(c["reward_risk"]), "flat_by": flat_by,
             "stop_detail": c["stop_detail"], "created_at": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"), "note": NOTE}
+    if swing:
+        plan.update({"mode": "swing", "exit_by": exit_by.isoformat(), "hold_sessions": hold})
+        if a.gap_risk is not None:
+            if a.gap_risk <= 0 or a.gap_risk >= 50:
+                raise PlanError("--gap-risk is the worst-5%% loss in percent, e.g. 4.5; got %s" % a.gap_risk)
+            plan["gap_risk_pct"] = float(a.gap_risk)
+        if a.source:
+            plan["source"] = a.source
     if atr is not None:
         plan["atr"] = round(atr, 4)
         plan["atr_bars"] = atr_n
@@ -599,6 +658,11 @@ def build_plan(a, now_utc):
                             % (ratio(c["reward_risk"]), num(D(mrr))))
     except PlanError:
         pass
+    if swing:
+        warnings.append("Swing: held overnight until the close of %s (%d session%s). A gap can open past the "
+                        "stop; the max loss can be more than the stop says%s." % (
+                            exit_by, hold, "" if hold == 1 else "s",
+                            " (the event study's worst 5%% was -%s%%)" % num(D(a.gap_risk)) if a.gap_risk else ""))
     today = to_ist(now_utc).date()
     if day != today:
         warnings.append("This plan is for %s, not today (%s)." % (day.isoformat(), today.isoformat()))
@@ -627,7 +691,12 @@ def describe(plan):
     out.append("  Target        %s  %s" % (money(plan["target"]), plan["target_label"]))
     out.append("  Risk a share  %s (%s%% of the entry)" % (money(plan["risk_per_share"]), pct))
     out.append("  Reward:risk   %s" % ratio(plan["reward_risk"]))
-    out.append("  Flat by       %s IST, win or lose: no overnight hold" % plan["flat_by"])
+    if plan.get("mode") == "swing":
+        out.append("  Exit by       the close of %s (swing, %s session%s held overnight)%s" % (
+            plan["exit_by"], plan.get("hold_sessions", "?"), "" if plan.get("hold_sessions") == 1 else "s",
+            ", gap risk %s%%" % plan["gap_risk_pct"] if plan.get("gap_risk_pct") else ""))
+    else:
+        out.append("  Flat by       %s IST, win or lose: no overnight hold" % plan["flat_by"])
     out.append("Set before the entry. If price hits the stop, you are out; never move it further away.")
     out.append(NOTE)
     return out
@@ -652,7 +721,10 @@ def cmd_plan(a):
         print("Note: " + w)
     if a.write:
         print("Wrote %s." % a.write)
-    print("Next: /trader-timemachine replays it, then /trader-budget sizes it to your max loss. Nothing was placed.")
+    if plan.get("mode") == "swing":
+        print("Next: /trader-budget sizes it (on the stop and the gap risk), then /trader-risk. Nothing was placed.")
+    else:
+        print("Next: /trader-timemachine replays it, then /trader-budget sizes it to your max loss. Nothing was placed.")
     return 0
 
 
@@ -661,7 +733,8 @@ def cmd_show(a):
         print("No plan at %s yet. Make one: exit.py plan --write" % a.plan)
         return 1
     plan = read_json(a.plan, "plan")
-    for k in ("symbol", "date", "entry", "stop", "target", "risk_per_share", "reward_risk", "flat_by"):
+    for k in ("symbol", "date", "entry", "stop", "target", "risk_per_share", "reward_risk",
+              "exit_by" if plan.get("mode") == "swing" else "flat_by"):
         if plan.get(k) is None:
             raise PlanError("%s is missing %r: make a new plan with exit.py plan --write" % (a.plan, k))
     if a.json:
@@ -694,6 +767,12 @@ def main(argv=None):
     p.add_argument("--stop", help="or-mid (orb default), or-low, price:X, pct:X, atr:K")
     p.add_argument("--target", help="2R (default), 1R, 1.5R, price:X")
     p.add_argument("--flat-by", help="HH:MM India time, IST (default: config flat_by, 15:15)")
+    p.add_argument("--mode", choices=["day", "swing"], default="day",
+                   help="day (default: flat by the close) or swing (held overnight)")
+    p.add_argument("--exit-by", help="swing: the last session, YYYY-MM-DD")
+    p.add_argument("--hold", type=int, help="swing: sessions to hold after the entry day (default 1)")
+    p.add_argument("--gap-risk", type=float, help="swing: worst-5%% loss in %%, from events.py (sizes on the gap)")
+    p.add_argument("--source", help=argparse.SUPPRESS)
     p.add_argument("--config", default="trader/config.json")
     p.add_argument("--offline", metavar="PATH", help="saved Yahoo chart JSON for an atr stop")
     p.add_argument("--now", help='pretend it is this India time (IST), e.g. "2026-10-19 10:15"')

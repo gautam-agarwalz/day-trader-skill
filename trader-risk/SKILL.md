@@ -62,7 +62,7 @@ batch that is fine order by order but breaks a limit together is caught.
 | check | blocks when |
 | --- | --- |
 | format | no symbol, side not buy or sell, both or neither of qty and notional, a notional order that is not market + day (Alpaca's rule), a limit order with no limit price; a bracket that is not whole shares, not `day` or `gtc`, or misses its stop-loss or take-profit |
-| asset | an option symbol while `allow_options` is false; crypto or anything that is not a US stock or ETF ticker |
+| asset | an option symbol while `allow_options` is false; crypto or anything that is not an NSE symbol or a stock or ETF ticker |
 | short | a sell of more than you hold (`allow_short` false) |
 | blocked | (entries) the ticker is on the `blocked` list |
 | size | (entries) under `min_order_usd` or over `max_order_usd` |
@@ -77,6 +77,7 @@ batch that is fine order by order but breaks a limit together is caught.
 | pdt | (entries, only with `pdt_guard` true) 3 day trades already in the last 5 business days |
 | duplicate | (entries) the same symbol and side twice in one batch, or already placed today |
 | daily limit | (entries) `max_orders_per_day` orders already placed today |
+| swing | (entries whose plan says `"mode": "swing"`) `swing.allow_overnight` is false; `exit_by` not after today or more than `swing.max_hold_days` sessions away; over `swing.max_overnight_inr`; a `gap_risk_pct` gap that would lose more than `swing.max_loss_per_trade_inr`. The window uses `swing.no_entries_after` (15:25) instead |
 
 How the numbers work:
 

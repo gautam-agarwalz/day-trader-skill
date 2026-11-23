@@ -275,12 +275,15 @@ def validate(rule):
         raise AlertError("rule %s needs a numeric pct" % rule.get("id"))
     if t == "time" and _hhmm(rule.get("at")) is None:
         raise AlertError("rule %s needs \"at\" as an India time (IST) like \"15:15\"" % rule.get("id"))
-    if rule.get("date") and not re.match(r"^\d{4}-\d{2}-\d{2}$", str(rule["date"])):
-        raise AlertError("rule %s: date must be YYYY-MM-DD" % rule.get("id"))
+    for k in ("date", "until"):
+        if rule.get(k) and not re.match(r"^\d{4}-\d{2}-\d{2}$", str(rule[k])):
+            raise AlertError("rule %s: %s must be YYYY-MM-DD" % (rule.get("id"), k))
 
 
 def active(rule, today):
-    """A rule with a "date" is watched on that India date only."""
+    """A rule with a "date" is watched on that India date only; with "until" too, from date to until."""
+    if rule.get("until"):
+        return str(rule.get("date") or "") <= today <= str(rule["until"])
     return not rule.get("date") or str(rule["date"]) == today
 
 
@@ -349,7 +352,9 @@ def evaluate(rules, quotes, status, state, now_utc, signals=None):
                 msg += (", the market closes at %s." % status["closes"]) if status["open"] else \
                     ", the market has closed."
                 sym = str(r.get("symbol") or "").upper()
-                if sym:
+                if r.get("advice"):
+                    msg += " " + r["advice"]
+                elif sym:
                     msg += (" If %s is still open, close it: trader-broker flatten --symbol %s builds the sell "
                             "ticket, then trader-risk and your yes." % (sym, sym))
                 rings.append({"id": rid, "symbol": sym, "message": msg})
@@ -404,16 +409,37 @@ def rules_from_plan(plan, cfg_flat_by=None):
         label = plan.get("%s_label" % key)
         out.append({"id": "%s-plan-%s" % (sym.lower(), key), "symbol": sym, "type": typ, "price": float(v),
                     "note": word + (": " + label if label else "")})
-    flat = plan.get("flat_by") or cfg_flat_by or "15:15"
-    if _hhmm(flat) is None:
-        raise AlertError("the plan's flat_by %r is not a time like 15:15" % flat)
-    out.append({"id": "%s-flat-by" % sym.lower(), "symbol": sym, "type": "time", "at": flat,
-                "label": "flat by close", "before_close": True})
+    swing = plan.get("mode") == "swing"
+    if swing:
+        end = str(plan.get("exit_by") or "")
+        if not re.match(r"^\d{4}-\d{2}-\d{2}$", end):
+            raise AlertError("the swing plan has no exit_by date (run trader-exit --mode swing)")
+        out.append({"id": "%s-gap-check" % sym.lower(), "symbol": sym, "type": "time", "at": "09:20",
+                    "label": "overnight gap check: is %s still above the stop?" % sym, "after_date": True,
+                    "advice": "Compare the open with your stop ₹%s and re-place the stop for today: day orders "
+                              "expired at yesterday's close." % _n(plan["stop"])})
+        out.append({"id": "%s-exit-by" % sym.lower(), "symbol": sym, "type": "time", "at": cfg_flat_by or "15:15",
+                    "label": "swing exit day (%s)" % end, "before_close": True, "on": end})
+    else:
+        flat = plan.get("flat_by") or cfg_flat_by or "15:15"
+        if _hhmm(flat) is None:
+            raise AlertError("the plan's flat_by %r is not a time like 15:15" % flat)
+        out.append({"id": "%s-flat-by" % sym.lower(), "symbol": sym, "type": "time", "at": flat,
+                    "label": "flat by close", "before_close": True})
     out.append({"id": "%s-catalysts" % sym.lower(), "symbol": sym, "type": "catalyst",
                 "note": "new filings and smart-money items (trader-news / trader-pelosi)"})
     if plan.get("date"):
         for r in out:
-            r["date"] = str(plan["date"])
+            on = r.pop("on", None)
+            after = r.pop("after_date", False)
+            if on:
+                r["date"] = on
+            elif swing:
+                day = datetime.date.fromisoformat(str(plan["date"]))
+                r["date"] = (day + datetime.timedelta(days=1)).isoformat() if after else day.isoformat()
+                r["until"] = str(plan["exit_by"])
+            else:
+                r["date"] = str(plan["date"])
     return out
 
 

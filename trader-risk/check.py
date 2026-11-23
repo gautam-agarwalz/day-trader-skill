@@ -86,7 +86,7 @@ PRICE_FIELDS = ("qty", "notional", "limit_price", "stop_price", "take_profit_lim
 TYPES = {"market", "limit", "stop", "stop_limit", "trailing_stop"}
 TIFS = {"day", "gtc", "opg", "cls", "ioc", "fok"}
 OCC = re.compile(r"^[A-Z]{1,6}\d{6}[CP]\d{8}$")
-TICKER = re.compile(r"^[A-Z]{1,5}([.\-][A-Z]{1,2})?$|^[A-Z0-9&\-]{1,20}\.NS$")   # TSLA, BRK.B, RELIANCE.NS
+TICKER = re.compile(r"^[A-Z]{1,5}([.\-][A-Z]{1,2})?$|^[A-Z0-9][A-Z0-9&\-]{0,19}(\.NS)?$")   # TSLA, BRK.B, RELIANCE(.NS), M&M
 HHMM = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
 CENT = 0.005
 FRESH_MINUTES = 15
@@ -366,6 +366,40 @@ def day_trades(state, today):
 
 # ---------------------------------------------------------------- the check
 
+def sessions_between(start, end):
+    """NSE sessions after `start` up to and including `end`."""
+    n, d = 0, start
+    while d < end:
+        d += datetime.timedelta(days=1)
+        if trading_day(d)[0]:
+            n += 1
+    return n
+
+
+def swing_reasons(plan, sw, today, value):
+    """Why a swing (overnight) entry is blocked. Swing trades are off unless the config turns them on."""
+    out = []
+    if not sw.get("allow_overnight"):
+        out.append("swing: overnight holds are off. This plan holds %s to the close of %s; turn them on with "
+                   "\"swing\": {\"allow_overnight\": true} in trader/config.json, or plan a day trade"
+                   % (plan.get("symbol", ""), plan.get("exit_by")))
+        return out
+    try:
+        end = datetime.date.fromisoformat(str(plan.get("exit_by")))
+    except ValueError:
+        return ["swing: the plan has no exit_by date (make it with trader-exit --mode swing)"]
+    if end <= today:
+        out.append("swing: exit_by %s is not after today: that is a day trade" % end)
+    n = sessions_between(today, end)
+    most = int(sw.get("max_hold_days") or 10)
+    if n > most:
+        out.append("swing: %d sessions to %s, over your max_hold_days %d" % (n, end, most))
+    cap = _f(sw.get("max_overnight_inr"))
+    if cap and value is not None and value > cap + CENT:
+        out.append("swing: %s held overnight, over your %s max_overnight_inr" % (money(value), money(cap)))
+    return out
+
+
 def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=None, price_times=None):
     """Pure function. Returns {"results": [...], "pass": n, "block": n, "warnings": [...]}.
 
@@ -424,6 +458,8 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
         legs = o.get("take_profit_limit_price") is not None or o.get("stop_loss_stop_price") is not None
         bracket = oc == "bracket" or (not oc and legs)
         value = None
+        swing = str(plan.get("mode") or "day") == "swing"
+        sw = c.get("swing") if isinstance(c.get("swing"), dict) else {}
 
         # format
         if not sym:
@@ -476,7 +512,7 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
             else:
                 warns.append("option order: options can lose 100%% of what you pay")
         elif sym and ("/" in sym or not TICKER.match(sym)):
-            reasons.append("asset: %s does not look like a US stock or ETF ticker; "
+            reasons.append("asset: %s does not look like an NSE symbol or a stock or ETF ticker; "
                            "this pack trades stocks and ETFs only" % sym)
 
         # the reference price: what one share costs to get in
@@ -592,6 +628,14 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
                     shares = q if q is not None else ((value or 0) / ref)
                     max_loss = round(shares * risk_ps, 2)
                     cap = _f(c.get("max_loss_per_trade_inr"))
+                    if swing and _f(sw.get("max_loss_per_trade_inr")):
+                        cap = _f(sw["max_loss_per_trade_inr"])
+                    gap_pct = _f(plan.get("gap_risk_pct")) if swing else None
+                    if gap_pct and cap:
+                        gap_loss = round(shares * ref * gap_pct / 100.0, 2)
+                        if gap_loss > max(max_loss, cap) + CENT:
+                            later.append("gap: a %s%% overnight gap on %s shares is %s, over your %s max loss "
+                                         "per trade" % (_num(gap_pct), _num(shares), money(gap_loss), money(cap)))
                     if cap and max_loss > cap + CENT:
                         later.append("loss: %s shares x %s risk a share = %s at the stop, over your %s max loss "
                                      "per trade" % (_num(shares), _p(risk_ps), money(max_loss), money(cap)))
@@ -619,7 +663,13 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
             if cap_t and len(entries_today) + batch_entries >= cap_t:
                 later.append("trades: %d entries placed today plus %d passed earlier in this batch, your limit "
                              "is %d a day" % (len(entries_today), batch_entries, cap_t))
-            later.extend(win_reasons)
+            if swing:
+                later.extend(window_check(now_ist, dict(c, no_entries_after=sw.get("no_entries_after") or "15:25"))[0])
+                later.extend(swing_reasons(plan, sw, now_ist.date(), value))
+                info.append("swing: held overnight to the close of %s%s" % (
+                    plan.get("exit_by"), ", gap risk %s%%" % _num(plan["gap_risk_pct"]) if plan.get("gap_risk_pct") else ""))
+            else:
+                later.extend(win_reasons)
             if c.get("pdt_guard") and pdt_n >= 3:
                 later.append("pdt: %d day trades in the last 5 business days (%s); a 4th trips the "
                              "pattern-day-trader rule your broker applies (\"pdt_guard\": true)"

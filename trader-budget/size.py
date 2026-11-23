@@ -366,10 +366,24 @@ def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=
     available = max(round(available, 2), 0.0)
 
     limits = []
+    swing = str(plan.get("mode") or "day") == "swing"
+    sw = c.get("swing") if isinstance(c.get("swing"), dict) else {}
     max_loss = _f(c.get("max_loss_per_trade_inr"))
+    if swing and _f(sw.get("max_loss_per_trade_inr")):
+        max_loss = _f(sw["max_loss_per_trade_inr"])
+    gap_pct = _f(plan.get("gap_risk_pct")) if swing else None
+    gap_loss = round(ref * gap_pct / 100.0, 2) if gap_pct else None
     if max_loss:
         limits.append({"name": "max loss", "usd": max_loss, "per": risk, "shares": shares_for(max_loss, risk),
                        "how": "%s max loss / %s risk a share" % (money(max_loss), _price(risk))})
+        if gap_loss and gap_loss > risk:
+            limits.append({"name": "gap risk", "usd": max_loss, "per": gap_loss, "shares": shares_for(max_loss, gap_loss),
+                           "how": "%s max loss / %s (a %s%% overnight gap)" % (money(max_loss), _price(gap_loss),
+                                                                             _num(gap_pct))})
+    if swing and _f(sw.get("max_overnight_inr")):
+        cap_o = _f(sw["max_overnight_inr"])
+        limits.append({"name": "overnight cap", "usd": cap_o, "per": ref, "shares": shares_for(cap_o, ref),
+                       "how": "%s held overnight at most / %s" % (money(cap_o), _price(ref))})
     cap_pct = _f(c.get("max_position_pct"))
     if cap_pct:
         cap = round(budget * cap_pct / 100.0, 2)
@@ -390,7 +404,10 @@ def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=
     loss = round(qty * risk_c / 100.0, 2)
     refusal = None
     if qty == 0:
-        if bound[0] == "max loss":
+        if bound[0] == "gap risk":
+            refusal = ("a %s%% overnight gap on one share costs %s, more than your %s max loss per trade. "
+                       "No order. Skip it, or hold it intraday only." % (_num(gap_pct), _price(gap_loss), money(max_loss)))
+        elif bound[0] == "max loss":
             refusal = ("one share risks %s (entry %s minus stop %s), more than your %s max loss per trade. "
                        "No order. Skip this trade, or plan a closer stop with trader-exit."
                        % (money(risk), _price(ref), _price(stop), money(max_loss)))
@@ -412,7 +429,9 @@ def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=
         "stop_label": plan.get("stop_label", ""), "target_label": plan.get("target_label", ""),
         "budget": budget, "cash_buffer_pct": buf_pct, "cash_buffer": cash_buffer, "cash_available": available,
         "max_loss_per_trade_inr": max_loss, "limits": limits, "qty": qty, "bound_by": bound[0],
-        "cost": cost, "max_loss": loss, "flat_by": plan.get("flat_by") or c.get("flat_by"),
+        "cost": cost, "max_loss": loss, "flat_by": None if swing else (plan.get("flat_by") or c.get("flat_by")),
+        "mode": "swing" if swing else "day", "exit_by": plan.get("exit_by") if swing else None,
+        "gap_risk_pct": gap_pct, "gap_loss": round(qty * gap_loss, 2) if gap_loss else None,
         "order_type": "limit" if limit is not None else "market", "refusal": refusal,
     }
 
@@ -428,6 +447,8 @@ def bracket_order(s):
     setup = SETUP_WORDS.get(s["setup"], s["setup"] or "day trade")
     why = ("%s on %s: %d shares, bound by your %s (%d x %s = %s at the stop)"
            % (setup, s["symbol"], s["qty"], {"max loss": "%s max loss per trade" % money(s["max_loss_per_trade_inr"] or 0),
+                                             "gap risk": "max loss on an overnight gap",
+                                             "overnight cap": "overnight cap",
                                              "position cap": "position cap", "max order": "max order",
                                              "cash": "cash after the buffer"}[s["bound_by"]],
               s["qty"], _price(s["risk_per_share"]), money(s["max_loss"])))
@@ -440,6 +461,10 @@ def bracket_order(s):
                  "risk_per_share": s["risk_per_share"], "max_loss": s["max_loss"], "setup": s["setup"],
                  "entry_time": s["entry_time"], "flat_by": s["flat_by"]},
     })
+    if s.get("mode") == "swing":
+        o["plan"].update({"mode": "swing", "exit_by": s["exit_by"], "gap_risk_pct": s["gap_risk_pct"]})
+        o["product"] = "delivery (CNC): held overnight"
+        o["why"] += "; swing, held to the close of %s" % s["exit_by"]
     return o
 
 
@@ -478,7 +503,13 @@ def plan_report(s, order, notes=()):
     lines.append("  buy %s %s, %s, day, take-profit %s, stop-loss %s"
                  % (order["qty"], order["symbol"], how, order["take_profit_limit_price"],
                     order["stop_loss_stop_price"]))
-    if s["flat_by"]:
+    if s.get("mode") == "swing":
+        lines.append("Swing: held overnight (delivery), out by the close of %s. The bracket's legs are day orders: "
+                     "re-place the stop each morning (or use your broker's GTT)." % s["exit_by"])
+        if s.get("gap_loss"):
+            lines.append("A %s%% gap past the stop would cost about %s: that is what sized it."
+                         % (_num(s["gap_risk_pct"]), money(s["gap_loss"])))
+    elif s["flat_by"]:
         lines.append("Flat by %s IST: anything still open then gets closed (trader-alerts rings, "
                      "trader-broker flatten)." % s["flat_by"])
     lines.append("")

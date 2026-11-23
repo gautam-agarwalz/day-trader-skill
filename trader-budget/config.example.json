@@ -20,5 +20,12 @@
   "allow_options": false,
   "allow_margin": false,
   "allow_short": false,
-  "pdt_guard": false
+  "pdt_guard": false,
+  "swing": {
+    "allow_overnight": false,
+    "max_hold_days": 10,
+    "max_loss_per_trade_inr": 50,
+    "max_overnight_inr": 4000,
+    "no_entries_after": "15:25"
+  }
 }

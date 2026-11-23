@@ -9,6 +9,7 @@ days), from five years of NSE announcements and NSE's daily bhavcopy. No languag
     python3 events.py study --type order_win             # what followed, by day-0 move, and the best rule
     python3 events.py study --type results --session during --bucket "up 2-5%"
     python3 events.py suggest                            # ideas from today's trader-news / trader-pelosi items
+    python3 events.py plan 1 --write                     # idea 1 -> trader/plan.json (swing) for budget and risk
 
 Data (all official NSE, public):
   www.nseindia.in/api/corporate-announcements?index=equities&from_date=&to_date=   every filing since 2016
@@ -157,6 +158,7 @@ def _f(x):
 def parse_bhavcopy(text, series=SERIES):
     """sec_bhavdata_full CSV -> (YYYY-MM-DD, [row]). Only series EQ and BE (the tradeable equities)."""
     rows, day = [], None
+    text = (text or "").replace("\r\n", "\n").replace("\r", "\n")
     reader = csv.reader(io.StringIO(text))
     head = [h.strip().upper() for h in next(reader, [])]
     if "SYMBOL" not in head:
@@ -236,7 +238,7 @@ def parse_meetings(doc):
 def parse_bands(text, day):
     """eq_band_changes CSV for `day` -> band_cut / band_widen events, effective from the next session."""
     out = []
-    reader = csv.reader(io.StringIO(text))
+    reader = csv.reader(io.StringIO((text or "").replace("\r\n", "\n").replace("\r", "\n")))
     head = [h.strip().lower() for h in next(reader, [])]
     if "symbol" not in head or "from" not in head:
         return out
@@ -337,6 +339,8 @@ def backfill(con, client, start, end, sources=SOURCES, log=print, today=None):
                 elif d < settled:   # on a holiday NSE serves the previous session's file under the new name
                     mark_loaded(con, "bars", day, 0)
                     stats["holidays"] += 1
+            except csv.Error as e:
+                note("bhavcopy %s: unreadable CSV (%s)" % (day, e))
             except ih.FeedError as e:
                 if "HTTP 404" in str(e) and d < settled:
                     mark_loaded(con, "bars", day, 0)
@@ -352,6 +356,8 @@ def backfill(con, client, start, end, sources=SOURCES, log=print, today=None):
                 add_events(con, evs)
                 stats["events"] += len(evs)
                 mark_loaded(con, "bands", day, len(evs))
+            except csv.Error as e:
+                note("bands %s: unreadable CSV (%s)" % (day, e))
             except ih.FeedError as e:
                 if "HTTP 404" in str(e) and d < settled:
                     mark_loaded(con, "bands", day, 0)
@@ -987,7 +993,12 @@ def suggest(con, now, items, quotes=None, cost=COST, min_turnover=MIN_TURNOVER_C
         if rule["kind"] == "bracket":
             stop = ref * (1 - rule["stop_atr"] * atr)
             target = ref * (1 + rule["target_r"] * rule["stop_atr"] * atr)
-        idea.update({"rule": best["text"], "entry": _entry_text(rule["entry"], sess, day0, cal),
+        entry_day = next_session(day0, cal) if rule["entry"] == "open1" else day0
+        exit_day = day0     # path day k is the k-th session after day 0; open0's day 1 is day 0 itself
+        for _ in range(rule["days"] - (1 if rule["entry"] == "open0" else 0)):
+            exit_day = next_session(exit_day, cal)
+        idea.update({"rule": best["text"], "rule_spec": rule, "entry_day": entry_day, "exit_by": exit_day,
+                     "entry": _entry_text(rule["entry"], sess, day0, cal),
                      "reference_price": ref, "stop": stop, "target": target,
                      "exit": "the next open" if rule["kind"] == "gap" else "the close of day %d" % rule["days"],
                      "average_net_pct": i["mean"], "median_net_pct": i["median"], "win_pct": i["win"],
@@ -1127,6 +1138,81 @@ def cmd_suggest(args, con):
     return 0 if doc["ideas"] else 1
 
 
+def plan_from_idea(idea, min_rr=1.0, now=None):
+    """An idea from `suggest` -> a trader-exit style swing plan (trader/plan.json) for budget, risk, alerts.
+    A time-exit rule (overnight gap, plain hold) still gets a stop: the larger of 1 ATR and the worst-5 %
+    loss, and a target at min_reward_risk x that risk, marked as a ceiling."""
+    ref = float(idea["reference_price"])
+    rule = idea["rule_spec"]
+    gap = max(0.0, -(idea.get("worst_5pct") or 0.0))
+    if idea.get("stop") and idea.get("target"):
+        stop, target = float(idea["stop"]), float(idea["target"])
+        stop_label = "%g x ATR under the entry (event rule)" % rule["stop_atr"]
+        target_label = "%g x risk (event rule)" % rule["target_r"]
+    else:
+        dist = max(idea["atr_pct"], gap) / 100.0
+        stop = ref * (1 - dist)
+        target = ref * (1 + max(min_rr, 1.0) * dist)
+        stop_label = "max(1 ATR, the worst-5%% loss %.2f%%) under the entry" % gap
+        target_label = "a ceiling only: the rule exits on time (%s)" % idea["exit"]
+    stop = math.floor(stop * 100) / 100.0
+    target = math.floor(target * 100 + 0.5) / 100.0
+    risk = round(ref - stop, 2)
+    hold = 0
+    d = idea["entry_day"]
+    while d < idea["exit_by"]:
+        d = (_dt.date.fromisoformat(d) + _dt.timedelta(days=1)).isoformat()
+        if d not in NSE_HOLIDAYS and _dt.date.fromisoformat(d).weekday() < 5:
+            hold += 1
+    when = {"close0": "3:15 PM", "open0": "9:15 AM", "open1": "9:15 AM"}[rule["entry"]]
+    return {"created_by": "trader-timemachine events.py", "symbol": idea["symbol"], "side": "buy",
+            "date": idea["entry_day"], "setup": "event", "entry": round(ref, 2), "entry_time": when,
+            "entry_bar": None, "interval": "5m", "opening_range": None, "stop": stop, "stop_rule": "event",
+            "stop_label": stop_label, "target": target, "target_r": round((target - ref) / risk, 2) if risk else None,
+            "target_label": target_label, "risk_per_share": risk,
+            "reward_risk": round((target - ref) / risk, 2) if risk else None, "flat_by": None if hold else "15:15",
+            "mode": "swing" if hold else "day", "exit_by": idea["exit_by"] if hold else None, "hold_sessions": hold,
+            "gap_risk_pct": round(gap, 2) if gap else None,
+            "source": "%s %s %s (%s)" % (idea["symbol"], idea["type"], idea["event_time"], idea["link"]),
+            "event": {"rule": idea["rule"], "entry": idea["entry"], "exit": idea["exit"], "trades": idea["trades"],
+                      "average_net_pct": idea["average_net_pct"], "win_pct": idea["win_pct"],
+                      "verdict": idea["verdict"]},
+            "created_at": (now or ih.now_ist()).strftime("%Y-%m-%d %H:%M IST"),
+            "note": "An event idea, history not a forecast. A stop is a plan, not a guarantee: an overnight gap "
+                    "can open past it."}
+
+
+def cmd_plan(args, con):
+    doc = ih.load_json(args.ideas) or {}
+    ideas = doc.get("ideas") or []
+    pick = None
+    if args.idea.isdigit() and 1 <= int(args.idea) <= len(ideas):
+        pick = ideas[int(args.idea) - 1]
+    else:
+        pick = next((d for d in ideas if d["symbol"] == args.idea.upper()), None)
+    if not pick:
+        print("no idea %r in %s (run `events.py suggest` first)" % (args.idea, args.ideas), file=sys.stderr)
+        return 1
+    cfg = ih.load_json(args.config) or {}
+    plan = plan_from_idea(pick, float(cfg.get("min_reward_risk") or 1.0))
+    print("Swing plan from idea %s: %s, %s" % (args.idea, plan["symbol"], pick["rule"]))
+    print("  Entry   Rs %.2f, %s" % (plan["entry"], pick["entry"]))
+    print("  Stop    Rs %.2f  %s" % (plan["stop"], plan["stop_label"]))
+    print("  Target  Rs %.2f  %s" % (plan["target"], plan["target_label"]))
+    if plan["mode"] == "swing":
+        print("  Exit by the close of %s (%d session%s held overnight)%s" % (
+            plan["exit_by"], plan["hold_sessions"], "" if plan["hold_sessions"] == 1 else "s",
+            "; worst 5%% of past trades lost %.2f%% or more" % plan["gap_risk_pct"] if plan["gap_risk_pct"] else ""))
+    else:
+        print("  Out the same day, flat by 15:15 (a day trade)")
+    if args.write:
+        ih.write_json(args.write, plan)
+        print("Wrote %s." % args.write)
+    print("Next: /trader-budget sizes it on the stop and the gap risk, /trader-risk checks it (swing trades need "
+          "\"swing\": {\"allow_overnight\": true}), /trader-alerts add --from-plan. Nothing was placed.")
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--db", default=DB_PATH)
@@ -1156,6 +1242,11 @@ def main(argv=None):
     g.add_argument("--max", type=int, default=15)
     g.add_argument("--json", action="store_true")
     g.add_argument("--dry-run", action="store_true")
+    pl = sub.add_parser("plan", help="turn idea N (or a symbol) from `suggest` into trader/plan.json (swing)")
+    pl.add_argument("idea")
+    pl.add_argument("--ideas", default=os.path.join(IDEAS_DIR, "latest.json"))
+    pl.add_argument("--config", default=os.path.join("trader", "config.json"))
+    pl.add_argument("--write", nargs="?", const=os.path.join("trader", "plan.json"), metavar="PATH")
     for p in (s, g):
         p.add_argument("--cost", type=float, default=COST, help="round-trip cost in %% (default 0.30)")
         p.add_argument("--min-turnover", type=float, default=MIN_TURNOVER_CR, help="Rs cr a day (default 1)")
@@ -1169,7 +1260,7 @@ def main(argv=None):
     con = connect(args.db)
     try:
         return {"backfill": cmd_backfill, "update": cmd_update, "types": cmd_types, "study": cmd_study,
-                "suggest": cmd_suggest}[args.cmd](args, con)
+                "suggest": cmd_suggest, "plan": cmd_plan}[args.cmd](args, con)
     except KeyboardInterrupt:
         con.commit()
         print("\nstopped; run the same command again to resume", file=sys.stderr)

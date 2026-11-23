@@ -73,7 +73,12 @@ A `catalyst` rule reads `trader/catalysts/` and `trader/smart_money/`, so run
 or a scheduled task) for it to see anything new.
 
 A rule with `"date"` is watched on that India date only; `--from-plan`
-rules carry the plan's date, so yesterday's stop never rings today. A `time`
+rules carry the plan's date, so yesterday's stop never rings today. A rule
+with `"until"` too is watched from `date` to `until`: a swing plan
+(`"mode": "swing"`) gets its stop and target from the entry day to its
+`exit_by`, an "overnight gap check" at 09:20 each morning after the entry
+(compare the open with the stop and re-place the stop: day orders expire),
+and a "swing exit day" alarm at 15:15 on `exit_by`, instead of the flat-by. A `time`
 rule with `"before_close": true` would move earlier with an early close; the
 NSE has none scheduled, so today it changes nothing.
 

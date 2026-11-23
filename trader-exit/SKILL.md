@@ -69,6 +69,15 @@ A level setup has no opening range to lean on, so it needs a stop you name.
 - **Flat by.** 15:15 by default (or `flat_by` in the config). Out by then,
   win or lose, no overnight hold. On an early close it moves up with the
   close (the NSE has none scheduled). An entry at or after the flat-by time is refused.
+- **Swing mode** (`--mode swing`): an overnight or multi-day hold, such as an
+  event idea from `/trader-timemachine`'s `events.py` (buy before the close
+  for the next morning's gap). No flat-by: `--exit-by YYYY-MM-DD` or `--hold N`
+  (sessions after the entry day, holidays skipped, default 1) sets the last
+  session, and `--gap-risk PCT` (the event study's worst-5 % loss) is saved so
+  `/trader-budget` sizes on the gap, not only the stop. Say every time that an
+  overnight gap can open past the stop. `/trader-risk` blocks a swing plan
+  until `"swing": {"allow_overnight": true}` is in the config.
+  `events.py plan N --write` builds the same plan straight from idea N.
 
 ## Steps
 

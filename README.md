@@ -177,8 +177,10 @@ never as a promise.
 **Event odds are history.** The event study counts what followed past NSE
 filings of the same kind (from Dec 2020, the start of NSE's full bhavcopy),
 with the sample size on every number. An overnight hold can gap through any
-stop, a filing after 3:30 cannot be bought before the next morning's gap, and
-the trading chain is still built for day trades: holding overnight is your call.
+stop, and a filing after 3:30 cannot be bought before the next morning's gap.
+Overnight (swing) holds are off until you turn them on in `trader/config.json`
+(`"swing": {"allow_overnight": true}`); then the exit planner, budget, risk
+and alerts handle an exit-by date and size on the gap risk.
 
 **A stop is a plan, not a guarantee.** In a fast market, across a gap or at a
 circuit, a stop order can fill well past its price or not at all. The max loss
