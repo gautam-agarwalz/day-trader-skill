@@ -140,11 +140,12 @@ class Replay(unittest.TestCase):
         self.assertLess(a["mean_p5"], a["mean_p95"])
 
 
-def build_db(path, n_events=40, gap=0.02, start=datetime.date(2024, 1, 1)):
-    """A database where ABC.. stocks gap up `gap` the morning after every order win filed at 13:00."""
+def build_db(path, n_events=40, gap=0.02, start=datetime.date(2024, 1, 1), every=3):
+    """A database where ABC.. stocks gap up `gap` the morning after every order win filed at 13:00
+    (one every `every` sessions; 9 spreads them over 1.5 years, so the last 12 months can be checked)."""
     con = ev.connect(path)
     days, d = [], start
-    while len(days) < 30 + n_events * 3:
+    while len(days) < 30 + n_events * every:
         if d.weekday() < 5:
             days.append(d.isoformat())
         d += datetime.timedelta(days=1)
@@ -156,9 +157,9 @@ def build_db(path, n_events=40, gap=0.02, start=datetime.date(2024, 1, 1)):
             pc = prices.get(s, 100.0)
             o, c = pc, pc
             k = i - 30
-            if s == "ABC" and k > 0 and k % 3 == 1:     # the morning after an event day: gap up, hold it
+            if s == "ABC" and k > 0 and k % every == 1:     # the morning after an event day: gap up, hold it
                 o = c = pc * (1 + gap)
-            if s == "XYZ" and k > 0 and k % 3 == 1:     # and XYZ gaps down after its auditor resigns
+            if s == "XYZ" and k > 0 and k % every == 1:     # and XYZ gaps down after its auditor resigns
                 o = c = pc * (1 - gap)
             h, lo = max(o, c) * 1.01, min(o, c) * 0.99
             rows.append({"symbol": s, "series": "EQ", "open": o, "high": h, "low": lo, "close": c, "prev_close": pc,
@@ -167,7 +168,7 @@ def build_db(path, n_events=40, gap=0.02, start=datetime.date(2024, 1, 1)):
         ev.add_bars(con, day, rows)
         ev.mark_loaded(con, "bars", day, len(rows))
         k = i - 30
-        if k >= 0 and k % 3 == 0:
+        if k >= 0 and k % every == 0:
             events.append({"id": "ann|%d" % i, "symbol": "ABC", "time": day + " 13:00", "type": "order_win",
                            "direction": "up", "text": "order", "link": "l%d" % i})
             events.append({"id": "aud|%d" % i, "symbol": "XYZ", "time": day + " 13:00", "type": "auditor_resignation",
@@ -244,7 +245,7 @@ class Study(unittest.TestCase):
 class Suggest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
-        self.con, self.days = build_db(os.path.join(self.tmp, "e.sqlite"))
+        self.con, self.days = build_db(os.path.join(self.tmp, "e.sqlite"), n_events=70, every=9)
         self.today = self.days[-1]
 
     def tearDown(self):
@@ -335,7 +336,7 @@ class Suggest(unittest.TestCase):
 class Shorts(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
-        self.con, self.days = build_db(os.path.join(self.tmp, "e.sqlite"))
+        self.con, self.days = build_db(os.path.join(self.tmp, "e.sqlite"), n_events=70, every=9)
         self.today = self.days[-1]
 
     def tearDown(self):
@@ -361,7 +362,25 @@ class Shorts(unittest.TestCase):
         doc = ev.suggest(self.con, now, [self.item(self.today + " 13:00")], sims=200)
         self.assertEqual(doc["ideas"], [])
         self.assertEqual(doc["warnings"][0]["symbol"], "XYZ")
+        self.assertIn("the F&O list is not loaded", doc["warnings"][0]["why"])
+        self.con.execute("INSERT INTO fno VALUES ('RELIANCE', 500, ?)", (self.today,))
+        doc = ev.suggest(self.con, now, [self.item(self.today + " 13:00")], sims=200)
         self.assertIn("not an F&O stock", doc["warnings"][0]["why"])
+
+    def test_an_edge_never_checked_on_the_last_12_months_is_not_suggested(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            con, days = build_db(os.path.join(tmp, "short.sqlite"))      # about 7 months: nothing to check against
+            now = datetime.datetime.fromisoformat(days[-1] + " 14:30")
+            item = dict(self.item(days[-1] + " 13:10"), symbol="ABC", title="ABC: Bagging/Receiving of orders/contracts",
+                        detail="Abc has informed the Exchange about Bagging/Receiving of orders",
+                        flags=["Bagging/Receiving of orders/contracts"])
+            doc = ev.suggest(con, now, [item], sims=100)
+            self.assertEqual(doc["ideas"], [])
+            self.assertTrue(any("too few trades in the last 12 months" in x for x in doc["skipped"]), doc["skipped"])
+            con.close()
+        finally:
+            shutil.rmtree(tmp)
 
     def test_an_fno_stock_gets_an_overnight_futures_short(self):
         self.con.execute("INSERT INTO fno VALUES ('XYZ', 500, ?)", (self.today,))

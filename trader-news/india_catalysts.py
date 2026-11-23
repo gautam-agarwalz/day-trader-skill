@@ -151,12 +151,17 @@ EVENT_FAMILY = {  # a rare type falls back to its family when it has too few pas
 }
 
 
+# Not events for the study: call schedules and transcripts repeat what was already filed (a results call
+# transcript mentions "financial results" but is not the results).
+EVENT_NOISE = re.compile(r"investor meet|con(?:ference)?\.? ?call|earnings call|call transcript|analysts? meet", re.I)
+
+
 def event_type(text, desc="", company=""):
     """(type, direction) for one filing, or (None, None) when it is routine."""
     if company and len(company) > 3:
         text = re.sub(re.escape(company), " ", text or "", flags=re.I)
     hay = "%s %s" % (desc or "", text or "")
-    if desc in NOISE_DESC or NOISE.search(hay):
+    if desc in NOISE_DESC or NOISE.search(hay) or EVENT_NOISE.search(desc or ""):
         return None, None
     for t, d, rx in EVENT_RULES:
         if rx.search(hay):

@@ -125,8 +125,10 @@ It writes `trader/history/events.sqlite` and, for `suggest`,
 `trader/ideas/latest.json` plus `trader/ideas/ideas.csv`. Other flags:
 `--cost` (round trip in %, default 0.30 for a delivery trade),
 `--min-turnover` (Rs cr a day, default 1), `--sims` (default 10,000),
-`study --short` (the short side: studied, not suggested yet), `suggest
---no-quotes` (skip NSE's live quotes and use the last close).
+`study --short` (the short side), `suggest --no-quotes` (skip NSE's live
+quotes and use the last close), and `--now "YYYY-MM-DD HH:MM"` to replay a past
+moment: `study` and `suggest` then see only the filings before it and the daily
+bars before its date, so a replay cannot peek at what happened next.
 
 How it measures. A filing's time decides its session: before 9:15 (pre),
 during the session, or after 3:30 / on a holiday (after). Day 0 is the first
@@ -154,7 +156,10 @@ ones whose day 0 is today or the next session and that can still be traded
 (a filing at 13:00 can be bought before today's close for tomorrow's gap; one
 after 3:30 cannot, only from the next open), reads the live day-0 move from
 NSE, and studies the same type, session and day-0 move. An idea needs an edge
-after costs (and, when there is one, a positive last 12 months). Each idea has
+after costs on the older events AND a positive average on at least 10 trades in
+the last 12 months. A rule that looks good but could not be checked on the last
+12 months (a short history, a rare type) is listed under skipped, never as an
+idea. Each idea has
 the entry time, a reference price, the stop and target in rupees, the exit, the
 average and the odds, the 5 to 95 % range and the out-of-sample line.
 Bearish types (auditor resignations, defaults, pledges created...) and types

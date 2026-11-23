@@ -1033,6 +1033,7 @@ def suggest(con, now, items, quotes=None, cost=COST, min_turnover=MIN_TURNOVER_C
         seen.add((it["symbol"], et))
         fresh.append((it, et, sess, day0))
     cache, ideas, warnings = {}, [], []
+    fno_loaded = con.execute("SELECT COUNT(*) FROM fno").fetchone()[0] > 0
     for it, et, sess, day0 in fresh:
         sym = it["symbol"]
         entries = open_entries(sess, day0, now, cal)
@@ -1061,32 +1062,42 @@ def suggest(con, now, items, quotes=None, cost=COST, min_turnover=MIN_TURNOVER_C
         base = {"symbol": sym, "type": et, "family": ic.family_of(et), "direction": direction, "event_time": it["time"],
                 "title": it["title"], "link": it["link"], "session": sess, "day0": day0, "day0_move": move,
                 "atr_pct": atr * 100, "turnover_cr": turnover}
-        cands = []
-        if best and best["verdict"].startswith("edge"):
-            cands.append((st, best, 1, "cash"))
+        cands, untested = [], []
+
+        def consider(st_, b_, side_, instrument_):
+            # only a rule that also held up on the last 12 months becomes an idea
+            if b_ and b_["verdict"] == "edge":
+                cands.append((st_, b_, side_, instrument_))
+            elif b_ and b_["verdict"].startswith("edge"):
+                o_ = b_.get("out_of_sample")
+                untested.append("%s %s (%d trades in the last 12 months)" % (
+                    "long" if side_ > 0 else "short", instrument_, o_["n"] if o_ else 0))
+        consider(st, best, 1, "cash")
         leans_down = direction == "down" or (best and best["in_sample"]["mean"] < 0)
         lot, banned = fno_info(con, sym, day0)
         if leans_down or not cands:
             if "open0" in entries:
                 s_ = studied(-1, ("open0",), intraday_rule, "intraday")
                 b_ = s_["rules"].get("best")
-                if b_ and b_["verdict"].startswith("edge"):
-                    cands.append((s_, b_, -1, "cash intraday"))
+                consider(s_, b_, -1, "cash intraday")
             if lot and not banned:
                 ents = tuple(e for e in entries)
                 s_ = studied(-1, ents, overnight_rule, "futures")
                 b_ = s_["rules"].get("best")
-                if b_ and b_["verdict"].startswith("edge"):
-                    cands.append((s_, b_, -1, "futures"))
+                consider(s_, b_, -1, "futures")
             elif lot and banned:
                 skipped.append("%s: in the F&O ban period, no new futures positions" % sym)
         if not cands:
-            if not best:
+            if untested:
+                skipped.append("%s %s: a rule looked like an edge but has too few trades in the last 12 months "
+                               "to check it (%s); not suggested" % (sym, et, ", ".join(untested)))
+            elif not best:
                 skipped.append("%s %s: %s" % (sym, et, st["note"] or "no rule with %d past trades" % MIN_EVENTS))
             elif leans_down:
                 warnings.append(dict(base, why="history leans down after %s: the best long rule averaged %s (%s)%s" % (
                     st["used"], _p(best["in_sample"]["mean"]), best["verdict"],
-                    "" if lot else "; not an F&O stock, so no overnight short")))
+                    "" if lot else "; the F&O list is not loaded (run `events.py update`)" if not fno_loaded
+                    else "; not an F&O stock, so no overnight short")))
             else:
                 skipped.append("%s %s: no edge after costs in %d past trades (%s)" % (
                     sym, et, best["in_sample"]["n"], best["verdict"]))
