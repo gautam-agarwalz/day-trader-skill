@@ -225,7 +225,8 @@ class PlanRules(unittest.TestCase):
         for p, word in ((plan(stop=365.0), "not below the entry"),
                         (plan(target=360.0), "already happened"),
                         (plan(target=None), "positive target"),
-                        (plan(side="sell"), "long (buy) day trades only"),
+                        (plan(side="sell"), "a short needs its stop overhead"),
+                        (plan(side="sideways"), "buy or sell (short)"),
                         (plan(symbol=""), "no symbol")):
             with self.assertRaises(size.SizeError) as e:
                 size.size_trade(p, cfg(), today=TODAY)

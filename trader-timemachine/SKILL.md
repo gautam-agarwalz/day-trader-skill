@@ -150,7 +150,13 @@ after costs (and, when there is one, a positive last 12 months). Each idea has
 the entry time, a reference price, the stop and target in rupees, the exit, the
 average and the odds, the 5 to 95 % range and the out-of-sample line.
 Bearish types (auditor resignations, defaults, pledges created...) and types
-whose history leans down are printed as warnings: short ideas come later.
+whose history leans down are also studied on the short side: an intraday cash
+short (filing before the open: short at the day-0 open, cover the same day)
+and, for F&O stocks not in the F&O ban period, an overnight short in stock
+futures (lot sizes and the ban list from NSE's `fo_mktlots.csv` and
+`fo_secban.csv`, refreshed by `update`). The short odds use the cash prices:
+the near-month future tracks them, plus a small basis. With no short edge, or
+no futures, a bearish filing is printed as a warning.
 
 Schedule it every 15 minutes in the session with `/loop 15m` running
 `/trader-news`, then `/trader-pelosi`, then `events.py update` and

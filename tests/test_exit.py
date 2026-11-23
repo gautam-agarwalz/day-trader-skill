@@ -219,13 +219,17 @@ class Cli(unittest.TestCase):
         self.assertIn("level setup has no opening-range stop", err)
         self.assertEqual(self.plan("--stop", "pct:1")[0], 0)
 
-        code, _, err = self.plan("--side", "sell")
-        self.assertIn("v2 plans longs only", err)
+        code, out, err = self.plan("--side", "sell", "--stop", "pct:1", "--json")
+        self.assertEqual(code, 0, err)
+        short = json.loads(out)
+        self.assertEqual((short["side"], short["stop"], short["target"]), ("sell", 367.83, 356.88))   # 364.18 x 1.01 rounded up; 2R under
         self.write(os.path.join("trader", "entry.json"), dict(REEL_ENTRY, side="sell"))
         code, _, err = self.plan()
-        self.assertIn("longs only", err)
+        self.assertIn("a short's stop goes over the entry", err)   # the OR midpoint is under this entry
         code, _, err = self.plan("--stop", "price:364.10")
-        self.assertIn("longs only", err)
+        self.assertIn("a short's stop goes over the entry", err)
+        code, _, err = self.plan("--stop", "pct:1", "--mode", "swing")
+        self.assertIn("needs --instrument futures", err)
         os.remove(os.path.join("trader", "entry.json"))
         code, _, err = self.plan()
         self.assertIn("no entry", err)
@@ -291,7 +295,7 @@ class SkillDoc(unittest.TestCase):
         self.assertGreater(len(text.splitlines()), 60)
         self.assertEqual(text[text.index("## Safety"):], risk[risk.index("## Safety"):])
         low = " ".join(text.lower().split())
-        for must in ("before the entry", "a stop is a plan, not a guarantee", "day trading loses most people money", "/trader-timemachine", "/trader-budget", "longs only", "$358.32", "$370.04", "$5.86", "375.90", "too tight to survive the spread"):
+        for must in ("before the entry", "a stop is a plan, not a guarantee", "day trading loses most people money", "/trader-timemachine", "/trader-budget", "a short's stop goes above", "$358.32", "$370.04", "$5.86", "375.90", "too tight to survive the spread"):
             self.assertIn(must, low)
         for never in ("\u2014", "tick " + "by tick", "real " + "time", "pro" + "fit"):
             self.assertNotIn(never, low)

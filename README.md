@@ -178,6 +178,8 @@ never as a promise.
 filings of the same kind (from Dec 2020, the start of NSE's full bhavcopy),
 with the sample size on every number. An overnight hold can gap through any
 stop, and a filing after 3:30 cannot be bought before the next morning's gap.
+Shorts (intraday in cash, overnight in stock futures) are off until
+`"allow_short": true`.
 Overnight (swing) holds are off until you turn them on in `trader/config.json`
 (`"swing": {"allow_overnight": true}`); then the exit planner, budget, risk
 and alerts handle an exit-by date and size on the gap risk.

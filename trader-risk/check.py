@@ -460,6 +460,7 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
         value = None
         swing = str(plan.get("mode") or "day") == "swing"
         sw = c.get("swing") if isinstance(c.get("swing"), dict) else {}
+        futures = plan.get("instrument") == "futures"
 
         # format
         if not sym:
@@ -566,7 +567,7 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
             if value < float(c.get("min_order_inr") or 0) - CENT:
                 later.append("size: %s is under your %s minimum order"
                              % (money(value), money(c["min_order_inr"])))
-            if c.get("max_order_inr") and value > float(c["max_order_inr"]) + CENT:
+            if c.get("max_order_inr") and value > float(c["max_order_inr"]) + CENT and not futures:
                 later.append("size: %s is over your %s max order"
                              % (money(value), money(c["max_order_inr"])))
 
@@ -663,6 +664,15 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
             if cap_t and len(entries_today) + batch_entries >= cap_t:
                 later.append("trades: %d entries placed today plus %d passed earlier in this batch, your limit "
                              "is %d a day" % (len(entries_today), batch_entries, cap_t))
+            if futures:
+                lot = int(_f(plan.get("lot_size")) or 0)
+                if not lot or q is None or abs(q / lot - round(q / lot)) > 1e-9:
+                    later.append("futures: %s is not a whole number of lots (lot size %s)" % (qty, lot or "missing"))
+                info.append("stock futures: %s lot%s of %s; the margin is your broker's (SPAN + exposure)"
+                            % (_num(q / lot) if lot and q else "?", "" if lot and q == lot else "s", lot or "?"))
+            if swing and side == "sell" and not futures:
+                later.append("short: an overnight cash short is not possible in India (cash shorts are covered "
+                             "the same day); hold it overnight as a stock future, or plan a day trade")
             if swing:
                 later.extend(window_check(now_ist, dict(c, no_entries_after=sw.get("no_entries_after") or "15:25"))[0])
                 later.extend(swing_reasons(plan, sw, now_ist.date(), value))

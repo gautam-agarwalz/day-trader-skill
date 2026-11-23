@@ -65,7 +65,12 @@ A level setup has no opening range to lean on, so it needs a stop you name.
 - **Refused, with the reason.** A stop at or above the entry. A target at or
   below it. A risk under 0.05% of the price: too tight to survive the
   spread, normal wiggle would stop you out. An entry.json that has not
-  triggered (unless you give `--entry`). A short: v2 plans longs only.
+  triggered (unless you give `--entry`). An overnight cash short: in India a cash short is covered the same day, so an
+  overnight short is a stock future (`--instrument futures --lot N`).
+- **Shorts** (`--side short`): a short's stop goes above the entry (rounded
+  up, away from it) and the target below: `or-mid` or `or-high` for an
+  opening-range short, or `price:`, `pct:`, `atr:`. Shorts are off until the
+  config says `"allow_short": true`; `/trader-risk` checks it.
 - **Flat by.** 15:15 by default (or `flat_by` in the config). Out by then,
   win or lose, no overnight hold. On an early close it moves up with the
   close (the NSE has none scheduled). An entry at or after the flat-by time is refused.
@@ -126,7 +131,9 @@ sizes it: a $50 max loss per trade buys floor(50 / 5.86) = 8 shares.
   never prints a P&L or a return.
 - Nothing here promises winning trades or money. A 1R target is not a
   prediction that the price gets there.
-- Long side only. v2 plans longs only.
+- Longs by default. A short (`--side short`) is intraday in cash (covered by
+  the flat-by) or overnight in stock futures only, and only with
+  `"allow_short": true` in the config.
 
 ## What it never does
 

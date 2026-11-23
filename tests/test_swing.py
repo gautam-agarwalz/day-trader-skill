@@ -214,3 +214,71 @@ class EventPlan(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+SHORT_IDEA = dict(IDEA, symbol="XYZ", type="auditor_resignation", side="short", instrument="futures", lot_size=500,
+                  rule="short (sell first) at the day-0 close (15:10-15:25), cover at the next open",
+                  entry="short (sell first) 15:10-15:25 on %s, just before the close" % DAY, reference_price=200.0,
+                  worst_5pct=-2.5, atr_pct=2.0)
+
+
+class Shorts(unittest.TestCase):
+    def test_exit_plans_an_intraday_cash_short_and_an_overnight_futures_short(self):
+        code, out, err = run(exitp, ["plan", "--symbol", "XYZ", "--entry", "200", "--setup", "level", "--side", "short",
+                                     "--stop", "pct:1", "--target", "2R", "--date", DAY, "--now", DAY + " 10:00", "--json"])
+        self.assertEqual(code, 0, err)
+        p = json.loads(out)
+        self.assertEqual((p["side"], p["stop"], p["target"], p["flat_by"]), ("sell", 202.0, 196.0, "15:15"))
+        code, out, err = run(exitp, ["plan", "--symbol", "XYZ", "--entry", "200", "--setup", "level", "--side", "short",
+                                     "--stop", "pct:2", "--date", DAY, "--mode", "swing", "--instrument", "futures",
+                                     "--lot", "500", "--now", DAY + " 15:10", "--json"])
+        self.assertEqual(code, 0, err)
+        p = json.loads(out)
+        self.assertEqual((p["instrument"], p["lot_size"], p["mode"]), ("futures", 500, "swing"))
+        code, _, err = run(exitp, ["plan", "--symbol", "XYZ", "--entry", "200", "--setup", "level", "--side", "short",
+                                   "--stop", "pct:2", "--date", DAY, "--instrument", "futures", "--now", DAY + " 10:00"])
+        self.assertIn("needs --lot", err)
+
+    def test_futures_are_sized_in_whole_lots_or_refused(self):
+        plan = ev.plan_from_idea(SHORT_IDEA, 1.0)
+        c = cfg(max_loss_per_trade_inr=5000, max_overnight_inr=500000)
+        c["budget"] = 200000
+        s = size.size_trade(plan, c, today=DAY)
+        self.assertEqual(s["qty"] % 500, 0)
+        self.assertGreater(s["qty"], 0)
+        o = size.bracket_order(s)
+        self.assertEqual(o["side"], "sell")
+        self.assertIn("stock futures", o["product"])
+        small = size.size_trade(plan, cfg(), today=DAY)
+        self.assertEqual(small["qty"], 0)
+        self.assertIn("one lot of 500 XYZ shares", small["refusal"])
+
+    def test_risk_blocks_shorts_until_allowed_and_checks_lots(self):
+        plan = ev.plan_from_idea(SHORT_IDEA, 1.0)
+        c = cfg(max_loss_per_trade_inr=5000, max_overnight_inr=500000, allow_overnight=True)
+        c["budget"] = 200000
+        c["max_daily_loss_inr"] = 10000
+        order = size.bracket_order(size.size_trade(plan, c, today=DAY))
+        r = check.check([order], c, now=check.parse_now(DAY + " 15:15"))["results"][0]
+        self.assertTrue(any("short selling is off" in x for x in r["reasons"]), r["reasons"])
+        c["allow_short"] = True
+        r = check.check([order], c, now=check.parse_now(DAY + " 15:15"))["results"][0]
+        self.assertEqual(r["verdict"], "PASS", r["reasons"])
+        self.assertEqual(r["kind"], "entry")
+        odd = dict(order, qty="750")
+        r = check.check([odd], c, now=check.parse_now(DAY + " 15:15"))["results"][0]
+        self.assertTrue(any("whole number of lots" in x for x in r["reasons"]), r["reasons"])
+        cash = json.loads(json.dumps(order))
+        cash["plan"].pop("instrument")
+        r = check.check([cash], c, now=check.parse_now(DAY + " 15:15"))["results"][0]
+        self.assertTrue(any("overnight cash short is not possible" in x for x in r["reasons"]), r["reasons"])
+
+    def test_alerts_flip_for_a_short(self):
+        plan = ev.plan_from_idea(SHORT_IDEA, 1.0)
+        rules = {r["id"]: r for r in alerts.rules_from_plan(plan)}
+        self.assertEqual(rules["xyz-plan-stop"]["type"], "above")
+        self.assertEqual(rules["xyz-plan-target"]["type"], "below")
+        now = alerts.parse_now("2026-11-25 10:00")
+        rings, _ = alerts.evaluate([rules["xyz-plan-stop"]], {"XYZ": {"price": plan["stop"] + 1}},
+                                   alerts.market_status(now), {}, now)
+        self.assertIn("your stop", rings[0]["message"])

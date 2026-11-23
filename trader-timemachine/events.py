@@ -58,7 +58,9 @@ MEETINGS = "/api/corporate-board-meetings?index=equities&from_date=%s&to_date=%s
 DEALS = "/api/historicalOR/bulk-block-short-deals?optionType=%s&from=%s&to=%s"
 BHAV = "https://nsearchives.nseindia.com/products/content/sec_bhavdata_full_%s.csv"
 BANDS = "https://nsearchives.nseindia.com/content/equities/eq_band_changes_%s.csv"
-SOURCES = ("bars", "filings", "meetings", "bands", "deals")
+FO_LOTS = "https://nsearchives.nseindia.com/content/fo/fo_mktlots.csv"
+FO_BAN = "https://nsearchives.nseindia.com/content/fo/fo_secban.csv"
+SOURCES = ("bars", "filings", "meetings", "bands", "deals", "fno")
 FIRST_BHAV = _dt.date(2020, 12, 1)     # the full bhavcopy (with delivery) starts here
 SERIES = ("EQ", "BE")
 OPEN_HM, CLOSE_HM = "09:15", "15:30"
@@ -104,6 +106,8 @@ CREATE TABLE IF NOT EXISTS bars(symbol TEXT, date TEXT, open REAL, high REAL, lo
   prev_close REAL, volume REAL, turnover_cr REAL, deliv REAL, PRIMARY KEY(symbol, date)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS days(date TEXT PRIMARY KEY, market REAL, n INTEGER);
 CREATE TABLE IF NOT EXISTS loaded(kind TEXT, key TEXT, at TEXT, rows INTEGER, PRIMARY KEY(kind, key));
+CREATE TABLE IF NOT EXISTS fno(symbol TEXT PRIMARY KEY, lot INTEGER, updated TEXT);
+CREATE TABLE IF NOT EXISTS fno_ban(date TEXT, symbol TEXT, PRIMARY KEY(date, symbol));
 """
 
 
@@ -295,6 +299,48 @@ def parse_deals(block_doc, bulk_doc, day):
     return out
 
 
+def parse_lots(text):
+    """NSE fo_mktlots.csv -> {SYMBOL: lot size of the nearest expiry}. Index rows are kept (harmless)."""
+    out = {}
+    reader = csv.reader(io.StringIO((text or "").replace("\r\n", "\n").replace("\r", "\n")))
+    head = [h.strip().upper() for h in next(reader, [])]
+    if "SYMBOL" not in head:
+        return out
+    si = head.index("SYMBOL")
+    for rec in reader:
+        if len(rec) <= si + 1:
+            continue
+        sym = rec[si].strip().upper()
+        lots = [int(float(x)) for x in (c.strip() for c in rec[si + 1:]) if re.match(r"^\d+(\.0+)?$", x)]
+        if sym and sym != "SYMBOL" and lots:
+            out[sym] = lots[0]
+    return out
+
+
+def parse_ban(text):
+    """NSE fo_secban.csv -> (YYYY-MM-DD trade date, [SYMBOL]) of stocks in the F&O ban period."""
+    day = None
+    m = re.search(r"Trade Date\s+(\d{1,2}-[A-Za-z]{3}-\d{4})", text or "")
+    if m:
+        day = _dt.datetime.strptime(m.group(1).title(), "%d-%b-%Y").date().isoformat()
+    syms = [ln.split(",", 1)[1].strip().upper() for ln in (text or "").splitlines()
+            if re.match(r"^\s*\d+\s*,", ln) and len(ln.split(",", 1)) == 2]
+    return day, [x for x in syms if x]
+
+
+def load_fno(con, client, today):
+    """Refresh the F&O lot sizes and today's ban list (for the futures-short ideas)."""
+    lots = parse_lots(client.get_text(FO_LOTS, "fo_mktlots.csv"))
+    if lots:
+        con.execute("DELETE FROM fno")
+        con.executemany("INSERT INTO fno VALUES (?,?,?)", [(k, v, today.isoformat()) for k, v in lots.items()])
+    day, banned = parse_ban(client.get_text(FO_BAN, "fo_secban.csv"))
+    if day:
+        con.executemany("INSERT OR REPLACE INTO fno_ban VALUES (?,?)", [(day, b) for b in banned])
+    con.commit()
+    return len(lots), day, banned
+
+
 def _ddmmyyyy(day):
     return day[8:10] + day[5:7] + day[0:4]
 
@@ -418,6 +464,13 @@ def backfill(con, client, start, end, sources=SOURCES, log=print, today=None):
                 except ih.FeedError as e:
                     note("board meetings week %s: %s" % (key, e))
             monday += _dt.timedelta(days=7)
+    if "fno" in sources:
+        try:
+            stats["calls"] += 2
+            n_lots, ban_day, banned = load_fno(con, client, today)
+            log("  F&O: %d lot sizes; ban list for %s: %s" % (n_lots, ban_day, ", ".join(banned) or "none"))
+        except (ih.FeedError, csv.Error) as e:
+            note("F&O lots / ban list: %s" % e)
     con.commit()
     return stats
 
@@ -619,8 +672,10 @@ def rule_grid(entries, cost=COST, meeting=False):
     return rules
 
 
-def describe_rule(rule):
+def describe_rule(rule, side=1):
     e = ENTRY_TEXT[rule["entry"]]
+    if side < 0:
+        e = e.replace("buy", "short (sell first)")
     if rule["kind"] == "gap":
         return e + ", sell at the next open"
     if rule["kind"] == "hold":
@@ -686,7 +741,7 @@ def score(results):
             "gap_through": round(hows.get("stop gap", 0) / n * 100, 1)}
 
 
-def best_rule(events, side=1, entries=None, cost=COST, split=None, sims=SIMS):
+def best_rule(events, side=1, entries=None, cost=COST, split=None, sims=SIMS, keep=None):
     """Pick the rule on events before `split` (by lower bound on the average), check it after."""
     entries = entries or ("close0", "open1")
     ins = [e for e in events if not split or e["day0"] < split]
@@ -696,6 +751,8 @@ def best_rule(events, side=1, entries=None, cost=COST, split=None, sims=SIMS):
         ins, oos, checked = events, [], False
     best = None
     for rule in rule_grid(entries, cost):
+        if keep and not keep(rule):
+            continue
         res = [x for x in (trade(e, rule, side) for e in ins) if x]
         if len(res) < MIN_EVENTS:
             continue
@@ -713,7 +770,7 @@ def best_rule(events, side=1, entries=None, cost=COST, split=None, sims=SIMS):
         verdict = "failed out of sample"
     elif verdict == "edge" and not (o and o["n"] >= 10):
         verdict = "edge, not checked out of sample"
-    return {"rule": rule, "text": describe_rule(rule), "in_sample": s, "out_of_sample": o, "verdict": verdict,
+    return {"rule": rule, "text": describe_rule(rule, side), "in_sample": s, "out_of_sample": o, "verdict": verdict,
             "side": "long" if side > 0 else "short", "oos_checked": checked}
 
 
@@ -758,7 +815,7 @@ def split_date(cal):
 
 
 def study(con, etype, session=None, bucket=None, side=1, cost=COST, min_turnover=MIN_TURNOVER_CR, sims=SIMS,
-          cal=None, fallback=True, entries=None):
+          cal=None, fallback=True, entries=None, keep=None):
     """Everything about one event type (falling back to its family when there are too few)."""
     cal = cal or Calendar(con)
     used, types = etype, [etype]
@@ -781,7 +838,7 @@ def study(con, etype, session=None, bucket=None, side=1, cost=COST, min_turnover
     if not entries:
         sessions = {e["session"] for e in events}
         entries = ("open0", "close0", "open1") if "during" not in sessions else ("close0", "open1")
-    out["rules"]["best"] = best_rule(events, side, entries, cost, out["split"], sims)
+    out["rules"]["best"] = best_rule(events, side, entries, cost, out["split"], sims, keep)
     if "close0" in entries:
         gap_rule = {"entry": "close0", "kind": "gap", "days": 1, "cost": cost}
         res = [x for x in (trade(e, gap_rule, side) for e in events) if x]
@@ -921,13 +978,31 @@ def open_entries(session, day0, now, cal):
     return ()
 
 
-def _entry_text(entry, session, day0, cal):
+def _entry_text(entry, session, day0, cal, side=1):
+    verb = "buy" if side > 0 else "short (sell first)"
     if entry == "close0":
-        return "buy 15:10-15:25 on %s, just before the close%s" % (
-            day0, " (to hold for the next morning's gap)" if session == "during" else "")
+        return "%s 15:10-15:25 on %s, just before the close%s" % (
+            verb, day0, " (to hold for the next morning's gap)" if session == "during" else "")
     if entry == "open0":
-        return "buy at the open on %s (the filing came before that session)" % day0
-    return "buy at the open on %s" % next_session(day0, cal)
+        return "%s at the open on %s (the filing came before that session)" % (verb, day0)
+    return "%s at the open on %s" % (verb, next_session(day0, cal))
+
+
+def intraday_rule(rule):
+    return rule["entry"] == "open0" and rule["days"] == 1
+
+
+def overnight_rule(rule):
+    return not intraday_rule(rule)
+
+
+def fno_info(con, symbol, day):
+    """(lot size, banned?) for an F&O stock, (None, False) otherwise."""
+    r = con.execute("SELECT lot FROM fno WHERE symbol=?", (symbol,)).fetchone()
+    if not r:
+        return None, False
+    ban = con.execute("SELECT 1 FROM fno_ban WHERE symbol=? AND date>=?", (symbol, day)).fetchone()
+    return r[0], bool(ban)
 
 
 def suggest(con, now, items, quotes=None, cost=COST, min_turnover=MIN_TURNOVER_CR, sims=SIMS, max_ideas=15):
@@ -964,43 +1039,69 @@ def suggest(con, now, items, quotes=None, cost=COST, min_turnover=MIN_TURNOVER_C
         move = (q["price"] / q["prev_close"] - 1) * 100 if q.get("price") and q.get("prev_close") else None
         on_day0 = stamp[:10] == day0 and stamp >= day0 + " " + OPEN_HM
         bucket = bucket_of(move) if (move is not None and on_day0) else None
-        key = (et, sess, bucket, entries)
-        if key not in cache:
-            st = study(con, et, sess, bucket, 1, cost, min_turnover, sims, cal, entries=entries)[0]
-            if bucket and not st["rules"].get("best"):
-                st = study(con, et, sess, None, 1, cost, min_turnover, sims, cal, entries=entries)[0]
-            cache[key] = st
-        st = cache[key]
-        best = st["rules"].get("best")
+        def studied(side, ents, keep=None, label=""):
+            key = (et, sess, bucket, ents, side, label)
+            if key not in cache:
+                st_ = study(con, et, sess, bucket, side, cost, min_turnover, sims, cal, entries=ents, keep=keep)[0]
+                if bucket and not st_["rules"].get("best"):
+                    st_ = study(con, et, sess, None, side, cost, min_turnover, sims, cal, entries=ents, keep=keep)[0]
+                cache[key] = st_
+            return cache[key]
         direction = ic.EVENT_DIRECTION.get(et, "?")
-        idea = {"symbol": sym, "type": et, "family": ic.family_of(et), "direction": direction, "event_time": it["time"],
+        st = studied(1, entries)
+        best = st["rules"].get("best")
+        base = {"symbol": sym, "type": et, "family": ic.family_of(et), "direction": direction, "event_time": it["time"],
                 "title": it["title"], "link": it["link"], "session": sess, "day0": day0, "day0_move": move,
-                "bucket": st["bucket"], "studied": st["used"], "samples": st["summary"]["n"], "note": st["note"],
                 "atr_pct": atr * 100, "turnover_cr": turnover}
-        if not best:
-            skipped.append("%s %s: %s" % (sym, et, st["note"] or "no rule with %d past trades" % MIN_EVENTS))
-            continue
-        i, o, rule = best["in_sample"], best["out_of_sample"], best["rule"]
-        if not best["verdict"].startswith("edge"):
-            if i["mean"] < 0 or direction == "down":
-                warnings.append(dict(idea, why="history leans down after %s: the best long rule averaged %s (%s)" % (
-                    st["used"], _p(i["mean"]), best["verdict"])))
+        cands = []
+        if best and best["verdict"].startswith("edge"):
+            cands.append((st, best, 1, "cash"))
+        leans_down = direction == "down" or (best and best["in_sample"]["mean"] < 0)
+        lot, banned = fno_info(con, sym, day0)
+        if leans_down or not cands:
+            if "open0" in entries:
+                s_ = studied(-1, ("open0",), intraday_rule, "intraday")
+                b_ = s_["rules"].get("best")
+                if b_ and b_["verdict"].startswith("edge"):
+                    cands.append((s_, b_, -1, "cash intraday"))
+            if lot and not banned:
+                ents = tuple(e for e in entries)
+                s_ = studied(-1, ents, overnight_rule, "futures")
+                b_ = s_["rules"].get("best")
+                if b_ and b_["verdict"].startswith("edge"):
+                    cands.append((s_, b_, -1, "futures"))
+            elif lot and banned:
+                skipped.append("%s: in the F&O ban period, no new futures positions" % sym)
+        if not cands:
+            if not best:
+                skipped.append("%s %s: %s" % (sym, et, st["note"] or "no rule with %d past trades" % MIN_EVENTS))
+            elif leans_down:
+                warnings.append(dict(base, why="history leans down after %s: the best long rule averaged %s (%s)%s" % (
+                    st["used"], _p(best["in_sample"]["mean"]), best["verdict"],
+                    "" if lot else "; not an F&O stock, so no overnight short")))
             else:
-                skipped.append("%s %s: no edge after costs in %d past trades (%s)" % (sym, et, i["n"], best["verdict"]))
+                skipped.append("%s %s: no edge after costs in %d past trades (%s)" % (
+                    sym, et, best["in_sample"]["n"], best["verdict"]))
             continue
+        st, best, side, instrument = max(cands, key=lambda c: c[1]["in_sample"]["bootstrap"]["mean_p5"])
+        idea = dict(base, bucket=st["bucket"], studied=st["used"], samples=st["summary"]["n"], note=st["note"])
+        i, o, rule = best["in_sample"], best["out_of_sample"], best["rule"]
         ref = q.get("price") or last_close
         stop = target = None
         if rule["kind"] == "bracket":
-            stop = ref * (1 - rule["stop_atr"] * atr)
-            target = ref * (1 + rule["target_r"] * rule["stop_atr"] * atr)
+            stop = ref * (1 - side * rule["stop_atr"] * atr)
+            target = ref * (1 + side * rule["target_r"] * rule["stop_atr"] * atr)
         entry_day = next_session(day0, cal) if rule["entry"] == "open1" else day0
         exit_day = day0     # path day k is the k-th session after day 0; open0's day 1 is day 0 itself
         for _ in range(rule["days"] - (1 if rule["entry"] == "open0" else 0)):
             exit_day = next_session(exit_day, cal)
-        idea.update({"rule": best["text"], "rule_spec": rule, "entry_day": entry_day, "exit_by": exit_day,
-                     "entry": _entry_text(rule["entry"], sess, day0, cal),
+        idea.update({"side": "long" if side > 0 else "short", "instrument": instrument,
+                     "lot_size": lot if instrument == "futures" else None,
+                     "rule": best["text"], "rule_spec": rule, "entry_day": entry_day, "exit_by": exit_day,
+                     "entry": _entry_text(rule["entry"], sess, day0, cal, side),
                      "reference_price": ref, "stop": stop, "target": target,
-                     "exit": "the next open" if rule["kind"] == "gap" else "the close of day %d" % rule["days"],
+                     "exit": "the next open" if rule["kind"] == "gap" else "the close of day %d" % rule["days"]
+                     if exit_day != entry_day else "the close the same day (flat by 15:15)",
                      "average_net_pct": i["mean"], "median_net_pct": i["median"], "win_pct": i["win"],
                      "range_5_95": [i["p5"], i["p95"]], "outcomes": i["outcomes"], "gap_through_stop_pct": i["gap_through"],
                      "bootstrap": i.get("bootstrap"), "trades": i["n"],
@@ -1025,7 +1126,9 @@ def print_ideas(doc, file=None):
         w("  No idea passed: none of today's filings has a past record with an edge after costs.")
     for n, d in enumerate(doc["ideas"], 1):
         b = d.get("bootstrap") or {}
-        w("%d. %s  %s  (%s, %s)" % (n, d["symbol"], d["type"], d["verdict"], d["event_time"]))
+        w("%d. %s  %s  %s%s  (%s, %s)" % (n, d["symbol"], d["type"], d.get("side", "long").upper(),
+                                          " " + d["instrument"] if d.get("instrument", "cash") != "cash" else "",
+                                          d["verdict"], d["event_time"]))
         w("   %s" % d["title"][:120])
         w("   %s: %s" % (d["entry"], d["rule"]))
         lv = "   reference Rs %.2f" % d["reference_price"] if d.get("reference_price") else "   "
@@ -1144,20 +1247,22 @@ def plan_from_idea(idea, min_rr=1.0, now=None):
     loss, and a target at min_reward_risk x that risk, marked as a ceiling."""
     ref = float(idea["reference_price"])
     rule = idea["rule_spec"]
+    sgn = -1 if idea.get("side") == "short" else 1
+    where = "under" if sgn > 0 else "over"
     gap = max(0.0, -(idea.get("worst_5pct") or 0.0))
     if idea.get("stop") and idea.get("target"):
         stop, target = float(idea["stop"]), float(idea["target"])
-        stop_label = "%g x ATR under the entry (event rule)" % rule["stop_atr"]
+        stop_label = "%g x ATR %s the entry (event rule)" % (rule["stop_atr"], where)
         target_label = "%g x risk (event rule)" % rule["target_r"]
     else:
         dist = max(idea["atr_pct"], gap) / 100.0
-        stop = ref * (1 - dist)
-        target = ref * (1 + max(min_rr, 1.0) * dist)
-        stop_label = "max(1 ATR, the worst-5%% loss %.2f%%) under the entry" % gap
+        stop = ref * (1 - sgn * dist)
+        target = ref * (1 + sgn * max(min_rr, 1.0) * dist)
+        stop_label = "max(1 ATR, the worst-5%% loss %.2f%%) %s the entry" % (gap, where)
         target_label = "a ceiling only: the rule exits on time (%s)" % idea["exit"]
-    stop = math.floor(stop * 100) / 100.0
+    stop = (math.floor(stop * 100) if sgn > 0 else math.ceil(stop * 100 - 1e-6)) / 100.0
     target = math.floor(target * 100 + 0.5) / 100.0
-    risk = round(ref - stop, 2)
+    risk = round(abs(ref - stop), 2)
     hold = 0
     d = idea["entry_day"]
     while d < idea["exit_by"]:
@@ -1165,12 +1270,18 @@ def plan_from_idea(idea, min_rr=1.0, now=None):
         if d not in NSE_HOLIDAYS and _dt.date.fromisoformat(d).weekday() < 5:
             hold += 1
     when = {"close0": "3:15 PM", "open0": "9:15 AM", "open1": "9:15 AM"}[rule["entry"]]
-    return {"created_by": "trader-timemachine events.py", "symbol": idea["symbol"], "side": "buy",
+    extra = {}
+    if sgn < 0:
+        extra["short"] = True
+    if idea.get("instrument") == "futures":
+        extra.update({"instrument": "futures", "lot_size": int(idea["lot_size"])})
+    return dict(extra, **{"created_by": "trader-timemachine events.py", "symbol": idea["symbol"],
+            "side": "buy" if sgn > 0 else "sell",
             "date": idea["entry_day"], "setup": "event", "entry": round(ref, 2), "entry_time": when,
             "entry_bar": None, "interval": "5m", "opening_range": None, "stop": stop, "stop_rule": "event",
-            "stop_label": stop_label, "target": target, "target_r": round((target - ref) / risk, 2) if risk else None,
+            "stop_label": stop_label, "target": target, "target_r": round(abs(target - ref) / risk, 2) if risk else None,
             "target_label": target_label, "risk_per_share": risk,
-            "reward_risk": round((target - ref) / risk, 2) if risk else None, "flat_by": None if hold else "15:15",
+            "reward_risk": round(abs(target - ref) / risk, 2) if risk else None, "flat_by": None if hold else "15:15",
             "mode": "swing" if hold else "day", "exit_by": idea["exit_by"] if hold else None, "hold_sessions": hold,
             "gap_risk_pct": round(gap, 2) if gap else None,
             "source": "%s %s %s (%s)" % (idea["symbol"], idea["type"], idea["event_time"], idea["link"]),
@@ -1179,7 +1290,7 @@ def plan_from_idea(idea, min_rr=1.0, now=None):
                       "verdict": idea["verdict"]},
             "created_at": (now or ih.now_ist()).strftime("%Y-%m-%d %H:%M IST"),
             "note": "An event idea, history not a forecast. A stop is a plan, not a guarantee: an overnight gap "
-                    "can open past it."}
+                    "can open past it."})
 
 
 def cmd_plan(args, con):
@@ -1195,7 +1306,9 @@ def cmd_plan(args, con):
         return 1
     cfg = ih.load_json(args.config) or {}
     plan = plan_from_idea(pick, float(cfg.get("min_reward_risk") or 1.0))
-    print("Swing plan from idea %s: %s, %s" % (args.idea, plan["symbol"], pick["rule"]))
+    print("%s plan from idea %s: %s %s%s, %s" % (
+        "Swing" if plan["mode"] == "swing" else "Day", args.idea, plan["symbol"], "SHORT" if plan.get("short") else "long",
+        " (futures, lot %d)" % plan["lot_size"] if plan.get("instrument") == "futures" else "", pick["rule"]))
     print("  Entry   Rs %.2f, %s" % (plan["entry"], pick["entry"]))
     print("  Stop    Rs %.2f  %s" % (plan["stop"], plan["stop_label"]))
     print("  Target  Rs %.2f  %s" % (plan["target"], plan["target_label"]))

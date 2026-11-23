@@ -370,6 +370,10 @@ def evaluate(rules, quotes, status, state, now_utc, signals=None):
             if hit and rid not in rung:
                 word = "at or above" if typ == "above" else "at or below"
                 label = {"stop": "stop", "target": "target"}.get(r["type"], "alert level")
+                if r.get("note", "").startswith("plan stop"):
+                    label = "stop"
+                elif r.get("note", "").startswith("plan target"):
+                    label = "target"
                 rings.append({"id": rid, "symbol": sym, "message": "%s %s ₹%.2f: %s your %s ₹%s%s."
                               % (sym, "is" if status["open"] else "last", p, word, label, _n(r["price"]),
                                  (" (" + r["note"] + ")") if r.get("note") else "")})
@@ -402,7 +406,10 @@ def rules_from_plan(plan, cfg_flat_by=None):
         raise AlertError("the plan has no symbol (run trader-exit first)")
     sym = str(plan["symbol"]).upper()
     out = []
-    for key, typ, word in (("stop", "stop", "plan stop"), ("target", "target", "plan target")):
+    short = str(plan.get("side") or "buy").lower() in ("sell", "short")
+    kinds = ((("stop", "above", "plan stop (short)"), ("target", "below", "plan target (short)")) if short
+             else (("stop", "stop", "plan stop"), ("target", "target", "plan target")))
+    for key, typ, word in kinds:
         v = plan.get(key)
         if not isinstance(v, (int, float)) or v <= 0:
             raise AlertError("the plan has no %s (run trader-exit)" % key)

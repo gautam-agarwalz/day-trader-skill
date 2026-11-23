@@ -77,6 +77,7 @@ batch that is fine order by order but breaks a limit together is caught.
 | pdt | (entries, only with `pdt_guard` true) 3 day trades already in the last 5 business days |
 | duplicate | (entries) the same symbol and side twice in one batch, or already placed today |
 | daily limit | (entries) `max_orders_per_day` orders already placed today |
+| futures | (entries whose plan says `"instrument": "futures"`) qty not a whole number of lots; an overnight short that is not in futures (India's cash shorts are intraday) |
 | swing | (entries whose plan says `"mode": "swing"`) `swing.allow_overnight` is false; `exit_by` not after today or more than `swing.max_hold_days` sessions away; over `swing.max_overnight_inr`; a `gap_risk_pct` gap that would lose more than `swing.max_loss_per_trade_inr`. The window uses `swing.no_entries_after` (15:25) instead |
 
 How the numbers work:

@@ -155,6 +155,8 @@ def build_db(path, n_events=40, gap=0.02, start=datetime.date(2024, 1, 1)):
             k = i - 30
             if s == "ABC" and k > 0 and k % 3 == 1:     # the morning after an event day: gap up, hold it
                 o = c = pc * (1 + gap)
+            if s == "XYZ" and k > 0 and k % 3 == 1:     # and XYZ gaps down after its auditor resigns
+                o = c = pc * (1 - gap)
             h, lo = max(o, c) * 1.01, min(o, c) * 0.99
             rows.append({"symbol": s, "series": "EQ", "open": o, "high": h, "low": lo, "close": c, "prev_close": pc,
                          "volume": 1000.0, "turnover_cr": 0.1 if s == "THIN" else 5.0, "deliv": 50.0})
@@ -313,6 +315,68 @@ class Suggest(unittest.TestCase):
         with open(os.path.join(out, "latest.json")) as fh:
             self.assertEqual(json.load(fh)["ideas"][0]["symbol"], "ABC")
         self.assertTrue(os.path.exists(os.path.join(out, "ideas.csv")))
+
+
+class Shorts(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.con, self.days = build_db(os.path.join(self.tmp, "e.sqlite"))
+        self.today = self.days[-1]
+
+    def tearDown(self):
+        self.con.close()
+        shutil.rmtree(self.tmp)
+
+    def item(self, when):
+        return {"kind": "catalyst", "company": "", "tags": [], "category": "", "numbers": {}, "event_date": "",
+                "highlight": False, "source": "NSE announcements", "id": "9", "symbol": "XYZ", "time": when,
+                "title": "XYZ: Resignation of Statutory Auditor",
+                "detail": "Xyz has informed the Exchange about Resignation of Statutory Auditor",
+                "flags": ["Resignation of Statutory Auditor"], "link": "https://x/xyz.pdf"}
+
+    def test_lots_and_ban_parsers(self):
+        lots = ev.parse_lots("UNDERLYING ,SYMBOL ,DEC-26 ,JAN-27\nNIFTY 50 ,NIFTY ,65 ,65\n"
+                             "Xyz Ltd ,XYZ ,  ,500\nSymbol ,SYMBOL ,x ,y\n")
+        self.assertEqual(lots, {"NIFTY": 65, "XYZ": 500})
+        day, banned = ev.parse_ban("Securities in Ban For Trade Date 25-NOV-2026:\n1,MANAPPURAM\n2,XYZ\n")
+        self.assertEqual((day, banned), ("2026-11-25", ["MANAPPURAM", "XYZ"]))
+
+    def test_a_bearish_filing_is_a_warning_without_futures(self):
+        now = datetime.datetime.fromisoformat(self.today + " 14:00")
+        doc = ev.suggest(self.con, now, [self.item(self.today + " 13:00")], sims=200)
+        self.assertEqual(doc["ideas"], [])
+        self.assertEqual(doc["warnings"][0]["symbol"], "XYZ")
+        self.assertIn("not an F&O stock", doc["warnings"][0]["why"])
+
+    def test_an_fno_stock_gets_an_overnight_futures_short(self):
+        self.con.execute("INSERT INTO fno VALUES ('XYZ', 500, ?)", (self.today,))
+        now = datetime.datetime.fromisoformat(self.today + " 14:00")
+        doc = ev.suggest(self.con, now, [self.item(self.today + " 13:00")], sims=200)
+        idea = doc["ideas"][0]
+        self.assertEqual((idea["symbol"], idea["side"], idea["instrument"], idea["lot_size"]),
+                         ("XYZ", "short", "futures", 500))
+        self.assertIn("short (sell first) 15:10-15:25", idea["entry"])
+        self.assertGreater(idea["average_net_pct"], 1.0)
+        plan = ev.plan_from_idea(idea, 1.0)
+        self.assertEqual((plan["side"], plan["instrument"], plan["lot_size"], plan["mode"]),
+                         ("sell", "futures", 500, "swing"))
+        self.assertGreater(plan["stop"], plan["entry"])
+        self.assertLess(plan["target"], plan["entry"])
+
+    def test_a_banned_stock_gets_no_futures_short(self):
+        self.con.execute("INSERT INTO fno VALUES ('XYZ', 500, ?)", (self.today,))
+        self.con.execute("INSERT INTO fno_ban VALUES (?, 'XYZ')", (self.today,))
+        now = datetime.datetime.fromisoformat(self.today + " 14:00")
+        doc = ev.suggest(self.con, now, [self.item(self.today + " 13:00")], sims=100)
+        self.assertEqual(doc["ideas"], [])
+        self.assertTrue(any("ban period" in x for x in doc["skipped"]))
+
+    def test_study_short_side(self):
+        out, _ = ev.study(self.con, "auditor_resignation", side=-1, sims=200)
+        best = out["rules"]["best"]
+        self.assertEqual(best["side"], "short")
+        self.assertGreater(best["in_sample"]["mean"], 1.0)
+        self.assertIn("short (sell first)", best["text"])
 
 
 class Backfill(unittest.TestCase):

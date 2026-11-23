@@ -61,6 +61,12 @@ If `trader/config.json` does not exist, copy `config.example.json` into
   **min_reward_risk** (1.0), **require_stop** (true), **no_entries_before** / **no_entries_after**
   ("09:30" / "14:50") and **flat_by** ("15:15"), all India time (IST).
 - **blocked**: tickers they never want to trade.
+- **Shorts**: a plan with `"side": "sell"` (from `trader-exit --side short`
+  or `events.py plan`) is sized the same way with the stop above the entry; a
+  market short is sized at the LOWER of the plan's entry and a fresh price.
+  Futures plans (`"instrument": "futures"`) are sized in whole lots, on the
+  margin (`swing.futures_margin_pct`, default 20 %, an estimate) instead of
+  the full notional, and refused when one lot is over a limit.
 - **swing** (overnight holds, off by default): `allow_overnight` (false),
   `max_hold_days` (10 sessions), `max_loss_per_trade_inr` (50, counted on the
   larger of the stop and the plan's `gap_risk_pct`), `max_overnight_inr`
