@@ -553,30 +553,36 @@ def event_path(bars, dates, day0, event_date=None, after=10):
             "turnover0": t0 or 0.0, "hold_to_meeting": hold}
 
 
-def load_bars(con, symbols):
+def load_bars(con, symbols, before=None):
+    """Daily bars per symbol; with `before` ('YYYY-MM-DD ...') only the days before that date."""
     out = {}
+    cut = (before or "9999-12-31")[:10]
     for sym in symbols:
         rows = con.execute("SELECT date, open, high, low, close, prev_close, volume, turnover_cr, deliv FROM bars "
-                           "WHERE symbol=? ORDER BY date", (sym,)).fetchall()
+                           "WHERE symbol=? AND date<? ORDER BY date", (sym, cut)).fetchall()
         out[sym] = ({r[0]: tuple(r[1:]) for r in rows}, [r[0] for r in rows])
     return out
 
 
-def collect(con, cal, types, session=None, bucket=None, min_turnover=MIN_TURNOVER_CR, limit=MAX_EVENTS):
-    """Past events of these types with their price paths, newest first. One event per stock and day 0."""
+def collect(con, cal, types, session=None, bucket=None, min_turnover=MIN_TURNOVER_CR, limit=MAX_EVENTS,
+            before=None):
+    """Past events of these types with their price paths, newest first. One event per stock and day 0.
+    With `before` ('YYYY-MM-DD HH:MM') only what was known then: filings before it, bars before its date."""
     q = "SELECT id, symbol, time, type, event_date, category, text, link FROM events WHERE type IN (%s) ORDER BY time DESC" % (
         ",".join("?" * len(types)))
     rows = con.execute(q, list(types)).fetchall()
     picked, seen = [], set()
     for r in rows:
+        if before and r[2][:16] >= before[:16]:
+            continue
         sess, day0 = cal.session(r[2])
-        if not day0 or (session and sess != session) or (r[1], day0) in seen:
+        if not day0 or (before and day0 >= before[:10]) or (session and sess != session) or (r[1], day0) in seen:
             continue
         seen.add((r[1], day0))
         picked.append((r, sess, day0))
         if len(picked) >= limit * 2:
             break
-    bars = load_bars(con, sorted({p[0][1] for p in picked}))
+    bars = load_bars(con, sorted({p[0][1] for p in picked}), before)
     out = []
     for r, sess, day0 in picked:
         b, dates = bars.get(r[1], ({}, []))
@@ -807,31 +813,33 @@ def summarise(events, market=None):
             "locked_up": sum(1 for e in events if e["locked_up"])}
 
 
-def split_date(cal):
-    if not cal.days:
+def split_date(cal, before=None):
+    days = [d for d in cal.days if not before or d < before[:10]]
+    if not days:
         return None
-    last = _dt.date.fromisoformat(cal.days[-1])
+    last = _dt.date.fromisoformat(days[-1])
     return (last - _dt.timedelta(days=int(OOS_MONTHS * 30.4))).isoformat()
 
 
 def study(con, etype, session=None, bucket=None, side=1, cost=COST, min_turnover=MIN_TURNOVER_CR, sims=SIMS,
-          cal=None, fallback=True, entries=None, keep=None):
-    """Everything about one event type (falling back to its family when there are too few)."""
+          cal=None, fallback=True, entries=None, keep=None, before=None):
+    """Everything about one event type (falling back to its family when there are too few).
+    `before` limits it to what was known at that time (no look-ahead when replaying a past day)."""
     cal = cal or Calendar(con)
     used, types = etype, [etype]
-    events = collect(con, cal, types, session, bucket, min_turnover)
+    events = collect(con, cal, types, session, bucket, min_turnover, before=before)
     note = None
     if len(events) < MIN_EVENTS and fallback:
         fam = ic.family_of(etype)
         members = [t for t in ic.ALL_TYPES if ic.family_of(t) == fam]
         if len(members) > 1:
-            more = collect(con, cal, members, session, bucket, min_turnover)
+            more = collect(con, cal, members, session, bucket, min_turnover, before=before)
             if len(more) > len(events):
                 note = "only %d past %s events%s; using the %s family (%s)" % (
                     len(events), etype, " in this bucket" if bucket else "", fam, ", ".join(members))
                 events, used, types = more, fam, members
     out = {"type": etype, "used": used, "types": types, "session": session or "any", "bucket": bucket or "any",
-           "cost": cost, "note": note, "summary": summarise(events, cal.market), "split": split_date(cal), "rules": {}}
+           "cost": cost, "note": note, "summary": summarise(events, cal.market), "split": split_date(cal, before), "rules": {}}
     if len(events) < MIN_EVENTS:
         out["note"] = (note + "; " if note else "") + "too few events (%d < %d) for odds" % (len(events), MIN_EVENTS)
         return out, events
@@ -939,9 +947,9 @@ def classify_item(it):
     return None
 
 
-def _symbol_atr(con, sym, n=14):
-    rows = con.execute("SELECT high, low, prev_close, close, turnover_cr, date FROM bars WHERE symbol=? "
-                       "ORDER BY date DESC LIMIT 20", (sym,)).fetchall()
+def _symbol_atr(con, sym, n=14, before=None):
+    rows = con.execute("SELECT high, low, prev_close, close, turnover_cr, date FROM bars WHERE symbol=? AND date<? "
+                       "ORDER BY date DESC LIMIT 20", (sym, (before or "9999-12-31")[:10])).fetchall()
     if len(rows) < 5:
         return None, None, None, None
     trs = [(max(h, pc) - min(lo, pc)) / pc for h, lo, pc, _c, _t, _d in rows[:n]]
@@ -1028,7 +1036,7 @@ def suggest(con, now, items, quotes=None, cost=COST, min_turnover=MIN_TURNOVER_C
     for it, et, sess, day0 in fresh:
         sym = it["symbol"]
         entries = open_entries(sess, day0, now, cal)
-        atr, turnover, last_close, last_day = _symbol_atr(con, sym)
+        atr, turnover, last_close, last_day = _symbol_atr(con, sym, before=stamp)
         if atr is None:
             skipped.append("%s: no daily bars in the history (run `events.py update`)" % sym)
             continue
@@ -1042,9 +1050,9 @@ def suggest(con, now, items, quotes=None, cost=COST, min_turnover=MIN_TURNOVER_C
         def studied(side, ents, keep=None, label=""):
             key = (et, sess, bucket, ents, side, label)
             if key not in cache:
-                st_ = study(con, et, sess, bucket, side, cost, min_turnover, sims, cal, entries=ents, keep=keep)[0]
+                st_ = study(con, et, sess, bucket, side, cost, min_turnover, sims, cal, entries=ents, keep=keep, before=stamp)[0]
                 if bucket and not st_["rules"].get("best"):
-                    st_ = study(con, et, sess, None, side, cost, min_turnover, sims, cal, entries=ents, keep=keep)[0]
+                    st_ = study(con, et, sess, None, side, cost, min_turnover, sims, cal, entries=ents, keep=keep, before=stamp)[0]
                 cache[key] = st_
             return cache[key]
         direction = ic.EVENT_DIRECTION.get(et, "?")
@@ -1201,7 +1209,9 @@ def cmd_study(args, con):
         print("unknown type %s; types: %s" % (args.type, ", ".join(ic.ALL_TYPES)), file=sys.stderr)
         return 2
     side = -1 if args.short else 1
-    out, events = study(con, args.type, args.session, args.bucket, side, args.cost, args.min_turnover, args.sims)
+    before = ih.now_ist().strftime("%Y-%m-%d %H:%M") if args.now else None
+    out, events = study(con, args.type, args.session, args.bucket, side, args.cost, args.min_turnover, args.sims,
+                        before=before)
     if args.json:
         print(json.dumps(out, indent=1, default=str))
     else:
@@ -1261,8 +1271,13 @@ def plan_from_idea(idea, min_rr=1.0, now=None):
         stop_label = "max(1 ATR, the worst-5%% loss %.2f%%) %s the entry" % (gap, where)
         target_label = "a ceiling only: the rule exits on time (%s)" % idea["exit"]
     stop = (math.floor(stop * 100) if sgn > 0 else math.ceil(stop * 100 - 1e-6)) / 100.0
-    target = math.floor(target * 100 + 0.5) / 100.0
     risk = round(abs(ref - stop), 2)
+    if not (idea.get("stop") and idea.get("target")):
+        # a ceiling at min_rr x the rounded risk, rounded away from the entry so reward:risk never dips under it
+        target = ref + sgn * max(min_rr, 1.0) * risk
+        target = (math.ceil(target * 100 - 1e-6) if sgn > 0 else math.floor(target * 100 + 1e-6)) / 100.0
+    else:
+        target = math.floor(target * 100 + 0.5) / 100.0
     hold = 0
     d = idea["entry_day"]
     while d < idea["exit_by"]:

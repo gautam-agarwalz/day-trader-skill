@@ -380,9 +380,9 @@ def swing_reasons(plan, sw, today, value):
     """Why a swing (overnight) entry is blocked. Swing trades are off unless the config turns them on."""
     out = []
     if not sw.get("allow_overnight"):
-        out.append("swing: overnight holds are off. This plan holds %s to the close of %s; turn them on with "
+        out.append("swing: overnight holds are off. This plan holds overnight to the close of %s; turn them on with "
                    "\"swing\": {\"allow_overnight\": true} in trader/config.json, or plan a day trade"
-                   % (plan.get("symbol", ""), plan.get("exit_by")))
+                   % plan.get("exit_by"))
         return out
     try:
         end = datetime.date.fromisoformat(str(plan.get("exit_by")))

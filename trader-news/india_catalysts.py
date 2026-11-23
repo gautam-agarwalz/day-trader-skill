@@ -106,7 +106,7 @@ EVENT_RULES = [
     ("bonus_split", "up", re.compile(r"\bbonus\b|stock split|sub-?division|split of (?:equity )?shares", re.I)),
     ("auditor_resignation", "down", re.compile(r"resignation of (?:the )?(?:statutory )?auditor", re.I)),
     ("default", "down", re.compile(r"^defaults? on payment|default (?:in|on) (?:the )?(?:payment|repayment)|"
-                                   r"corporate insolvency|insolvency (?:and bankruptcy|resolution)", re.I)),
+                                   r"corporate insolvency|insolvency (?:and bankruptcy|resolution)|\bIBC\b", re.I)),
     ("rating_down", "down", re.compile(r"credit rating.{0,200}(?:downgrad|revised (?:from .{0,40} )?to .{0,20}negative|"
                                        r"watch with negative)", re.I | re.S)),
     ("rating_up", "up", re.compile(r"credit rating.{0,200}(?:upgrad|revised .{0,40}positive|outlook .{0,20}positive)",
@@ -118,6 +118,7 @@ EVENT_RULES = [
     ("cfo_change", "?", re.compile(r"(?:appoint|resign|cessation).{0,160}(?:chief financial|\bCFO\b)|"
                                    r"(?:chief financial|\bCFO\b).{0,160}(?:appoint|resign|cessation)", re.I | re.S)),
     ("order_win", "up", re.compile(r"^bagging|receiving of orders|order(?:s)? (?:worth|valued|received|win|inflow)|"
+                                   r"\b(?:wins?|won|bags?|bagged|secures?|secured|receives?|received|receipt of)\b.{0,40}\b(?:orders?|contracts?)\b|"
                                    r"letter of (?:award|intent)|\bLoA\b|contract (?:worth|awarded)|award(?:ed)? "
                                    r"(?:of )?(?:a )?(?:contract|order|project)", re.I)),
     ("demerger", "?", re.compile(r"demerger|scheme of arrangement", re.I)),

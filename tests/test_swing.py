@@ -193,6 +193,12 @@ class EventPlan(unittest.TestCase):
         self.assertEqual(p["gap_risk_pct"], 3.2)
         self.assertIn("ceiling", p["target_label"])
 
+    def test_rounding_never_puts_reward_risk_under_the_minimum(self):
+        kec = dict(IDEA, symbol="KEC", reference_price=327.75, atr_pct=2.9, worst_5pct=-1.5)
+        p = ev.plan_from_idea(kec, 1.0)
+        self.assertEqual((p["stop"], p["target"]), (318.24, 337.26))
+        self.assertGreaterEqual((p["target"] - p["entry"]) / (p["entry"] - p["stop"]), 1.0)
+
     def test_cli_plan_writes_trader_plan(self):
         tmp = tempfile.mkdtemp()
         try:

@@ -39,6 +39,9 @@ class Classify(unittest.TestCase):
             ("Outcome of Board Meeting", "KSS Limited has submitted to the Exchange, the financial results for the "
              "period ended September 30, 2026.", "results", "?"),
             ("Credit Rating- Revision", "Edelweiss has informed the Exchange about upgrade in Credit Rating", "rating_up", "up"),
+            ("Press Release", "KEC International wins New Orders of Rs. 1,006 crores", "order_win", "up"),
+            ("Press Release", "B. L. Kashyap has secured a work order of Rs. 49 crores", "order_win", "up"),
+            ("Updates", "XYZ received a demand notice for orders under section 7 of IBC", "default", "down"),
         ]
         for desc, text, want, d in cases:
             self.assertEqual(ic.event_type(text, desc), (want, d), desc)
@@ -209,6 +212,18 @@ class Study(unittest.TestCase):
         self.assertTrue(best["verdict"].startswith("edge"))
         self.assertEqual(best["rule"]["entry"], "close0")
         self.assertGreater(best["in_sample"]["bootstrap"]["p_edge"], 99)
+
+    def test_no_look_ahead_when_replaying_a_past_day(self):
+        cut = self.days[60] + " 13:30"
+        out, events = ev.study(self.con, "order_win", sims=100, before=cut)
+        self.assertTrue(events)
+        self.assertTrue(all(e["time"] < cut for e in events))
+        self.assertTrue(all(len(e["path"]) <= 30 for e in events))
+        last = max(d for e in events for d in [e["time"][:10]])
+        self.assertLess(last, self.days[60])
+        self.assertLess(out["split"], self.days[60])
+        full, _ = ev.study(self.con, "order_win", sims=100)
+        self.assertGreater(full["summary"]["n"], out["summary"]["n"])
 
     def test_too_few_events_say_so(self):
         out, _ = ev.study(self.con, "rating_up", sims=100)
