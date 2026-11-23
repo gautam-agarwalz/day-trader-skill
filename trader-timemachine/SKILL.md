@@ -39,6 +39,14 @@ python3 "${CLAUDE_SKILL_DIR}/timemachine.py" run --symbol TSLA --date 2026-10-19
 python3 "${CLAUDE_SKILL_DIR}/timemachine.py" chart --from           # ASCII fan chart of the saved run
 ```
 
+On a filing day, `--event-pool TYPE` (or `--event-pool auto`, the type of the
+stock's latest trader-news / trader-pelosi item) draws the replays from the
+day-0 sessions of OTHER stocks that had the same kind of event in Yahoo's
+60-day window (from `events.py`'s history, up to 30 stocks, at least 10
+sessions or it falls back to the stock's own days and says so). The odds then
+answer "what do order-win days do", not "what do ordinary days do". The
+history replay stays on the stock's own days.
+
 Other flags: `--replays N`, `--seed N` (default 19), `--window N` (default 2
 bars), `--offline FILE` (a saved Yahoo chart JSON, `.json` or `.json.gz`),
 `--now "2026-10-19 10:15"` (India time, IST) to pin the clock.

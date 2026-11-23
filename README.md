@@ -134,7 +134,9 @@ python3 trader-exit/exit.py plan --stop or-mid --target 1R --write     # -> trad
 python3 trader-timemachine/timemachine.py run --write                  # 10,000 replays + the history
 python3 trader-timemachine/events.py backfill --years 5                # 5 years of NSE filings + daily bars (once)
 python3 trader-timemachine/events.py study --type order_win            # what followed past order wins
-python3 trader-timemachine/events.py suggest                           # overnight-gap / swing ideas from today's filings
+python3 trader-timemachine/events.py suggest                           # overnight-gap / swing / short ideas from today's filings
+python3 trader-timemachine/events.py plan 1 --write                    # idea 1 -> trader/plan.json (swing or short)
+python3 trader-timemachine/timemachine.py run --event-pool auto        # replay from other stocks' event days
 python3 trader-budget/size.py --write                                  # -> trader/orders.json
 python3 trader-risk/check.py                                           # PASS / BLOCK per order
 python3 trader-broker/ticket.py show                                   # the tickets, READY or not

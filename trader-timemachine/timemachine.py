@@ -668,8 +668,63 @@ def verdict_notes(mc):
     return notes
 
 
-def time_machine(text, plan, now_utc, replays=10000, seed=19, window=2, until=None, source="yahoo"):
-    """Chart JSON text + a normalized plan -> the timemachine.json document."""
+EVENT_POOL_MIN = 10   # day-0 sessions needed before the event pool replaces the stock's own days
+EVENT_POOL_MAX = 30   # at most this many other stocks' charts are fetched
+EVENTS_DB = os.path.join("trader", "history", "events.sqlite")
+
+
+def event_pool(etype, before, chart_for, now_utc, db=EVENTS_DB, limit=EVENT_POOL_MAX, exclude=""):
+    """Full 5-minute sessions of OTHER stocks on the day-0 of a past `etype` event (from events.py's
+    history), within Yahoo's 60-day window. Falls back to the type's family when there are too few.
+    -> (sessions [(label, bars)], info dict). chart_for(symbol) returns a Yahoo chart JSON text."""
+    import events as ev
+    if not os.path.exists(db):
+        raise TMError("no event history at %s: run `events.py backfill` (or `update`) first" % db)
+    con = ev.connect(db)
+    try:
+        cal = ev.Calendar(con)
+        cutoff = (datetime.date.fromisoformat(before) - datetime.timedelta(days=58)).isoformat()
+        info = {"type": etype, "used": etype, "tried": 0, "missing": []}
+        for types in ([etype], [t for t in ev.ic.ALL_TYPES if ev.ic.family_of(t) == ev.ic.family_of(etype)]):
+            rows = con.execute("SELECT symbol, time FROM events WHERE type IN (%s) AND time >= ? ORDER BY time DESC"
+                               % ",".join("?" * len(types)), types + [cutoff]).fetchall()
+            picks, seen = [], set()
+            for sym, when in rows:
+                day0 = cal.session(when)[1]
+                if not day0 or day0 >= before or day0 < cutoff or sym == exclude or (sym, day0) in seen:
+                    continue
+                seen.add((sym, day0))
+                picks.append((sym, day0))
+            if len(picks) >= EVENT_POOL_MIN or len(types) > 1:
+                if len(types) > 1:
+                    info["used"] = ev.ic.family_of(etype)
+                break
+    finally:
+        con.close()
+    sessions, charts = [], {}
+    for sym, day0 in picks:
+        if len(sessions) >= limit or info["tried"] >= limit * 2:
+            break
+        if sym not in charts:
+            info["tried"] += 1
+            try:
+                meta, bars, _ = parse_bars(chart_result(chart_for(sym), sym), now_utc)
+                charts[sym] = split_sessions(bars)
+            except TMError as e:
+                charts[sym] = {}
+                info["missing"].append("%s (%s)" % (sym, str(e)[:60]))
+        day = charts[sym].get(day0) or {}
+        if len(day) == SESSION_BARS:
+            sessions.append(("%s %s" % (day0, sym), [day[i] for i in range(SESSION_BARS)]))
+    info.update({"sessions": len(sessions), "stocks": len({lbl.split()[1] for lbl, _ in sessions})})
+    return sessions, info
+
+
+def time_machine(text, plan, now_utc, replays=10000, seed=19, window=2, until=None, source="yahoo",
+                 event_sessions=None, event_info=None):
+    """Chart JSON text + a normalized plan -> the timemachine.json document.
+    event_sessions: day-0 sessions of other stocks' past events of the same kind (event_pool); with at
+    least EVENT_POOL_MIN of them the replays are drawn from those instead of the stock's own days."""
     if not 1 <= replays <= 1000000:
         raise TMError("--replays must be between 1 and 1,000,000")
     if not 0 <= window <= 10:
@@ -712,10 +767,21 @@ def time_machine(text, plan, now_utc, replays=10000, seed=19, window=2, until=No
     if len(sessions) < MIN_SESSIONS:
         raise TMError("only %d full session(s) of %s before %s in the data; the time machine needs at least %d"
                       % (len(sessions), sym, plan["date"], MIN_SESSIONS))
-    pool = build_pool(sessions)
+    pool_from = sessions
+    pool_note = None
+    if event_sessions is not None:
+        ei = event_info or {}
+        if len(event_sessions) >= EVENT_POOL_MIN:
+            pool_from = sorted(event_sessions)
+            pool_note = ("Replays drawn from %d event days (%s, day 0) across %d other stocks, not from %s's own days."
+                         % (len(event_sessions), ei.get("used", "?"), ei.get("stocks", 0), sym))
+        else:
+            warn.append("only %d event-day sessions of %s in the last 60 days (need %d): the replays use %s's own "
+                        "days" % (len(event_sessions), ei.get("used", "?"), EVENT_POOL_MIN, sym))
+    pool = build_pool(pool_from)
     mc = simulate(pool, plan["entry"], plan["stop"], plan["target"], k, last, replays, seed, window, plan["side"])
-    mc = dict(mc, until=clock24(until_min), pool_sessions=len(sessions), pool_from=sessions[0][0],
-              pool_to=sessions[-1][0],
+    mc = dict(mc, until=clock24(until_min), pool_sessions=len(pool_from), pool_from=pool_from[0][0],
+              pool_to=pool_from[-1][0], pool_kind="event days" if pool_note else "own days",
               band_times=[clock24(OPEN_MIN + 5 * (j + 1)) for j in range(k, last + 1)])
     rule = resolve_rule(plan, entry_day)
     plan_out = {kk: v for kk, v in plan.items() if v is not None}
@@ -740,7 +806,9 @@ def time_machine(text, plan, now_utc, replays=10000, seed=19, window=2, until=No
         "verdict": verdict(mc),
         "verdict_notes": verdict_notes(mc),
         "warnings": warn,
-        "note": ("A simulation built from %s's own last %d full sessions. It is not a prediction: earnings, "
+        "event_pool": event_info,
+        "note": (pool_note + " It is not a prediction. Same seed, same numbers." if pool_note else
+                 "A simulation built from %s's own last %d full sessions. It is not a prediction: earnings, "
                  "news and halts can do things those sessions never did. Same seed, same numbers." % (sym, len(sessions))),
     }
 
@@ -763,8 +831,13 @@ def report(doc):
            p["target"], ("%g" % r), p["risk_per_share"]),
         "%s replays of the rest of the session, %s to %s (%d five-minute bars), seed %d."
         % ("{:,}".format(m["replays"]), p["entry_time"], until, m["bars_left"], m["seed"]),
-        "Each bar is drawn whole from %s's own 5-min bars at the same time of day (+-%d bars) over its last "
-        "%d full sessions (%s to %s)." % (p["symbol"], m["window"], m["pool_sessions"], m["pool_from"], m["pool_to"]),
+        ("Each bar is drawn whole from %s's own 5-min bars at the same time of day (+-%d bars) over its last "
+         "%d full sessions (%s to %s)." % (p["symbol"], m["window"], m["pool_sessions"], m["pool_from"], m["pool_to"])
+         if m.get("pool_kind") != "event days" else
+         "Each bar is drawn whole from %d event days of other stocks (%s, day 0, %s to %s) at the same time of day "
+         "(+-%d bars): what %s days have done, not %s's ordinary days."
+         % (m["pool_sessions"], (doc.get("event_pool") or {}).get("used", "?"), m["pool_from"][:10], m["pool_to"][:10],
+            m["window"], (doc.get("event_pool") or {}).get("used", "event"), p["symbol"])),
         "",
         "  target first   %s" % pc(m["p_target"]),
         "  stop first     %s" % pc(m["p_stop"]),
@@ -866,7 +939,25 @@ def compute(a):
         text, source = read_offline(a.offline, plan["symbol"]), "offline"
     else:
         text, source = fetch_chart(plan["symbol"]), "yahoo"
-    return time_machine(text, plan, now, a.replays, a.seed, a.window, a.until, source)
+    ev_sessions = ev_info = None
+    if getattr(a, "event_pool", None):
+        etype = a.event_pool
+        if etype == "auto":
+            import events as ev
+            sig = india_signals.signals_for(plan["symbol"], to_ist(now))
+            etype = next((t for t in (ev.classify_item(i) for i in sig["catalysts"] + sig["smart_money"]) if t), None)
+            if not etype:
+                raise TMError("--event-pool auto: no filing on %s in trader/catalysts or trader/smart_money to match"
+                              % plan["symbol"])
+        if a.offline and os.path.isdir(a.offline):
+            chart_for = lambda s: read_offline(a.offline, s)  # noqa: E731
+        else:
+            def chart_for(s):
+                _sleep(PAUSE)
+                return fetch_chart(s)
+        ev_sessions, ev_info = event_pool(etype, plan["date"], chart_for, now, a.events_db,
+                                          exclude=nse_base(plan["symbol"]))
+    return time_machine(text, plan, now, a.replays, a.seed, a.window, a.until, source, ev_sessions, ev_info)
 
 
 def event_notes(doc, now_utc):
@@ -937,6 +1028,9 @@ def main(argv=None):
         p.add_argument("--window", type=int, default=2, help="draw from the same time of day +- this many bars")
         p.add_argument("--until", help="end each replay at this time (default 15:30, the close)")
         p.add_argument("--offline", metavar="FILE", help="a saved Yahoo chart JSON (.json or .json.gz), no network")
+        p.add_argument("--event-pool", metavar="TYPE",
+                       help="replay from other stocks' day-0 sessions of this event type (events.py types), or auto")
+        p.add_argument("--events-db", default=EVENTS_DB)
         p.add_argument("--now", help='pretend it is this time ("2026-10-19 10:15" India time, or ISO with Z)')
 
     p = sub.add_parser("run", help="replay the plan: 10,000 simulated sessions plus the history")

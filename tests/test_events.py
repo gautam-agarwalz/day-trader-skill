@@ -422,3 +422,61 @@ class Backfill(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EventPool(unittest.TestCase):
+    """The time machine's event-day pool: other stocks' day-0 sessions of the same event type."""
+
+    def setUp(self):
+        import gzip
+        from _load import FIX
+        self.tm = load("trader-timemachine", "timemachine")
+        with gzip.open(os.path.join(FIX, "trader-timemachine", "TSLA-60d5m.json.gz"), "rt", encoding="utf-8") as fh:
+            self.text = fh.read()
+        self.now = self.tm.parse_now("2026-10-19 10:35")
+        _, bars, _ = self.tm.parse_bars(self.tm.chart_result(self.text, "TSLA"), self.now)
+        days = self.tm.split_sessions(bars)
+        self.full = [d for d in sorted(days) if len(days[d]) == self.tm.SESSION_BARS and d < "2026-10-19"]
+        self.tmp = tempfile.mkdtemp()
+        self.db = os.path.join(self.tmp, "e.sqlite")
+        con = ev.connect(self.db)
+        for d in self.full:
+            ev.add_bars(con, d, [{"symbol": "X", "series": "EQ", "open": 1, "high": 1, "low": 1, "close": 1,
+                                  "prev_close": 1, "volume": 1, "turnover_cr": 5, "deliv": 1}])
+        evs = [{"id": "e%d" % i, "symbol": "S%02d" % i, "time": d + " 11:00", "type": "order_win", "direction": "up"}
+               for i, d in enumerate(self.full[-14:])]
+        evs.append({"id": "own", "symbol": "TSLA", "time": self.full[-1] + " 11:00", "type": "order_win",
+                    "direction": "up"})
+        ev.add_events(con, evs)
+        con.commit()
+        con.close()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def test_pool_of_other_stocks_event_days(self):
+        sessions, info = self.tm.event_pool("order_win", "2026-10-19", lambda s: self.text, self.now, self.db,
+                                            exclude="TSLA")
+        self.assertEqual((len(sessions), info["stocks"], info["used"]), (14, 14, "order_win"))
+        self.assertTrue(all("TSLA" not in lbl for lbl, _ in sessions))
+        plan = self.tm.normalize_plan({"symbol": "TSLA", "side": "buy", "date": "2026-10-19", "setup": "orb",
+                                       "entry": 364.18, "entry_time": "10:00 AM", "entry_bar": 8, "stop": 358.32,
+                                       "target": 370.04})
+        doc = self.tm.time_machine(self.text, plan, self.now, replays=500, event_sessions=sessions, event_info=info)
+        self.assertEqual((doc["mc"]["pool_kind"], doc["mc"]["pool_sessions"]), ("event days", 14))
+        self.assertIn("event days", doc["note"])
+        self.assertIn("event days of other stocks", "\n".join(self.tm.report(doc)))
+
+    def test_too_few_event_days_fall_back_to_own_days(self):
+        sessions, info = self.tm.event_pool("order_win", "2026-10-19", lambda s: self.text, self.now, self.db, limit=5)
+        plan = self.tm.normalize_plan({"symbol": "TSLA", "side": "buy", "date": "2026-10-19", "setup": "orb",
+                                       "entry": 364.18, "entry_time": "10:00 AM", "entry_bar": 8, "stop": 358.32,
+                                       "target": 370.04})
+        doc = self.tm.time_machine(self.text, plan, self.now, replays=200, event_sessions=sessions, event_info=info)
+        self.assertEqual(doc["mc"]["pool_kind"], "own days")
+        self.assertTrue(any("event-day sessions" in w for w in doc["warnings"]))
+
+    def test_no_history_is_said(self):
+        with self.assertRaises(self.tm.TMError):
+            self.tm.event_pool("order_win", "2026-10-19", lambda s: self.text, self.now,
+                               os.path.join(self.tmp, "none.sqlite"))
