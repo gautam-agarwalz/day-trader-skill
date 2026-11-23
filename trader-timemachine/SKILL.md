@@ -96,6 +96,65 @@ not in the data (wrong date, not closed yet, a future day), or when the plan
 does not make sense (a stop above a buy's entry, an entry off the 5-minute
 grid). A live in-progress bar is never used.
 
+## Event study and trade ideas (events.py)
+
+The replays above are ordinary days. A filing day is not ordinary, so
+`events.py` measures what followed every past filing of the same kind on NSE
+(about five years: NSE's announcements, board-meeting notices, price-band
+changes, bulk and block deals, and the daily bhavcopy for prices).
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/events.py" backfill --years 5     # once (about an hour), resumable
+python3 "${CLAUDE_SKILL_DIR}/events.py" update                 # the days since (seconds)
+python3 "${CLAUDE_SKILL_DIR}/events.py" types                  # past events of each type
+python3 "${CLAUDE_SKILL_DIR}/events.py" study --type order_win
+python3 "${CLAUDE_SKILL_DIR}/events.py" study --type results --session during --bucket "up 2-5%"
+python3 "${CLAUDE_SKILL_DIR}/events.py" suggest                # ideas from today's /trader-news and /trader-pelosi items
+```
+
+It writes `trader/history/events.sqlite` and, for `suggest`,
+`trader/ideas/latest.json` plus `trader/ideas/ideas.csv`. Other flags:
+`--cost` (round trip in %, default 0.30 for a delivery trade),
+`--min-turnover` (Rs cr a day, default 1), `--sims` (default 10,000),
+`study --short` (the short side: studied, not suggested yet), `suggest
+--no-quotes` (skip NSE's live quotes and use the last close).
+
+How it measures. A filing's time decides its session: before 9:15 (pre),
+during the session, or after 3:30 / on a holiday (after). Day 0 is the first
+session the price could react in. Prices are chained through NSE's previous
+close, which NSE adjusts on ex-dates, so a bonus or a split is not a move. A
+day-0 close locked at the upper circuit is not buyable. Stocks trading under
+Rs 1 cr a day are left out. Costs come off every trade.
+
+It prints, with the sample size on every line: the day-0 gap and move, the 5
+days before, the overnight gap (day-0 close to the next open), day 1, 5 and 10
+closes, the same against the market (the median NSE stock), the best and worst
+point in 10 days, the run-up to a board meeting, and a table by day-0 move
+(down >5 % ... up >5 %). Then it replays a grid of rules on every past event:
+entry at the day-0 close, the next open or the day-0 open; stop 1 to 3 x the
+stock's ATR; target 1 to 3 x the risk; out by day 1 to 10. The rule with the
+best lower bound on its average is chosen on events before the last 12 months
+and checked on the last 12 months; 10,000 bootstrap resamples (seed 7) give
+the range of the average and how often the edge is above zero. A gap through
+the stop is filled at the open, and a stop and target in one bar count as the
+stop. Fewer than 30 events and a type falls back to its family (CEO change ->
+management); still fewer, no odds.
+
+`suggest` takes the items `/trader-news` and `/trader-pelosi` saved, keeps the
+ones whose day 0 is today or the next session and that can still be traded
+(a filing at 13:00 can be bought before today's close for tomorrow's gap; one
+after 3:30 cannot, only from the next open), reads the live day-0 move from
+NSE, and studies the same type, session and day-0 move. An idea needs an edge
+after costs (and, when there is one, a positive last 12 months). Each idea has
+the entry time, a reference price, the stop and target in rupees, the exit, the
+average and the odds, the 5 to 95 % range and the out-of-sample line.
+Bearish types (auditor resignations, defaults, pledges created...) and types
+whose history leans down are printed as warnings: short ideas come later.
+
+Schedule it every 15 minutes in the session with `/loop 15m` running
+`/trader-news`, then `/trader-pelosi`, then `events.py update` and
+`events.py suggest`.
+
 ## Steps
 
 1. Make sure `trader/plan.json` is today's plan from `/trader-exit`. If there
@@ -113,6 +172,14 @@ grid). A live in-progress bar is never used.
    notes say "Event on SYMBOL": these replays are ordinary days, and an event
    day can move further than any of them. Say that out loud.
 6. If the user still wants the trade, hand off to `/trader-budget` to size it.
+
+For an event idea (`events.py suggest` or `study`): give the entry time, the
+stop and target, the exit, then the average, the winners, the 5 to 95 % range
+and the number of past trades, the out-of-sample line and the verdict, all as
+printed. Say that an overnight hold can gap through any stop, that the
+worst-5 % line is the real risk, and that it is history, not a forecast. The
+chain (exit, budget, risk) is still built for day trades: an overnight hold is
+the user's own decision until the swing mode lands.
 
 ## Example: the reel (a past New York run, before the NSE switch)
 
@@ -141,6 +208,9 @@ the user should hear before `/trader-budget` sizes 8 shares.
 
 ## Rules
 
+- Event odds come from past NSE events with the sample size beside them. Never
+  quote an average without its n, and never call "edge, not checked out of
+  sample" an edge that was checked.
 - Every number comes from the run. Never round a coin flip up into an edge.
 - The verdict line and the lines under it are printed by the tool. Repeat
   them, do not rewrite them. Never judge a 2R or 3R plan by target first vs

@@ -74,7 +74,7 @@ smart-money tools). No API key: every source is public.
 | `/trader-news` | Filings & Catalyst Scanner | Reads NSE, BSE and SEBI filings and circulars, tags results, buybacks, order wins, presentations and exchange triggers, with exact results numbers from NSE's XBRL. |
 | `/trader-entry` | Entry Timer | Watches a setup bar by bar and tells you the moment to get in. |
 | `/trader-exit` | Exit Planner | Sets your stop and your target before you enter, so you know when to get out. |
-| `/trader-timemachine` | Time Machine | Replays every possible outcome of a trade before you risk a dollar: 10,000 simulated sessions plus every past time the setup fired. |
+| `/trader-timemachine` | Time Machine | Replays every possible outcome of a trade before you risk a dollar: 10,000 simulated sessions plus every past time the setup fired. Its event study measures what followed five years of NSE filings of each kind and turns today's filings into overnight-gap and swing ideas with odds. |
 | `/trader-risk` | Risk Manager | Checks every trade against your limits and stops anything over them. |
 | `/trader-budget` | Budget Manager | Sizes every position to your budget and your max loss per trade. |
 | `/trader-broker` | Order Executor | Sends approved orders to your broker, paper trading by default, never without your yes. |
@@ -132,6 +132,9 @@ python3 trader-entry/entry.py check RELIANCE --setup orb               # waiting
 python3 trader-entry/entry.py watch RELIANCE --every 30                # bar by bar until it triggers
 python3 trader-exit/exit.py plan --stop or-mid --target 1R --write     # -> trader/plan.json
 python3 trader-timemachine/timemachine.py run --write                  # 10,000 replays + the history
+python3 trader-timemachine/events.py backfill --years 5                # 5 years of NSE filings + daily bars (once)
+python3 trader-timemachine/events.py study --type order_win            # what followed past order wins
+python3 trader-timemachine/events.py suggest                           # overnight-gap / swing ideas from today's filings
 python3 trader-budget/size.py --write                                  # -> trader/orders.json
 python3 trader-risk/check.py                                           # PASS / BLOCK per order
 python3 trader-broker/ticket.py show                                   # the tickets, READY or not
@@ -171,6 +174,12 @@ stock's own last 60 days of 5-minute bars. The future can do things those 60
 days never did: results, a halt, a filing. Treat its odds as a reality check,
 never as a promise.
 
+**Event odds are history.** The event study counts what followed past NSE
+filings of the same kind (from Dec 2020, the start of NSE's full bhavcopy),
+with the sample size on every number. An overnight hold can gap through any
+stop, a filing after 3:30 cannot be bought before the next morning's gap, and
+the trading chain is still built for day trades: holding overnight is your call.
+
 **A stop is a plan, not a guarantee.** In a fast market, across a gap or at a
 circuit, a stop order can fill well past its price or not at all. The max loss
 shown is the loss at the stop price.
@@ -191,10 +200,10 @@ Nothing here is tax advice.
 
 ```
 trader-scanner/     SKILL.md, scan.py, nse_data.py, india_signals.py
-trader-news/        SKILL.md, news.py, india_http.py, india_results.py
+trader-news/        SKILL.md, news.py, india_http.py, india_results.py, india_catalysts.py
 trader-entry/       SKILL.md, entry.py, india_signals.py
 trader-exit/        SKILL.md, exit.py, india_signals.py
-trader-timemachine/ SKILL.md, timemachine.py, india_signals.py
+trader-timemachine/ SKILL.md, timemachine.py, events.py, india_signals.py, india_catalysts.py, india_http.py, nse_data.py
 trader-risk/        SKILL.md, check.py, india_signals.py
 trader-budget/      SKILL.md, size.py, config.example.json, targets.example.json
 trader-broker/      SKILL.md, ticket.py, claude_desktop_config.example.json
@@ -206,7 +215,7 @@ requirements.txt    Python packages (Python 3.10+)
 ```
 
 The shared modules (`nse_data.py`, `india_http.py`, `india_results.py`,
-`india_signals.py`) are copied into each folder that uses them so every skill
+`india_signals.py`, `india_catalysts.py`) are copied into each folder that uses them so every skill
 works on its own; the tests keep the copies identical.
 
 MIT. Made by [Jake Schincariol](https://opusjake.ai).

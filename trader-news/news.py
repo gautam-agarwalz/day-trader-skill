@@ -57,6 +57,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import india_http as ih  # noqa: E402
 import india_results as ir  # noqa: E402
+from india_catalysts import TAGS, TAG_ORDER, NOISE, NOISE_DESC, tags_for, doc_kind  # noqa: E402
 
 SOURCES = ("nse_api", "nse_rss", "bse", "sebi", "surveillance", "upcoming", "ir")
 NSE_RSS = {"announcements": "Online_announcements.xml", "results": "Financial_Results.xml",
@@ -71,80 +72,6 @@ OUT_DIR = os.path.join("trader", "catalysts")
 STATE = os.path.join("trader", "state", "catalysts.json")
 IR_WATCHLIST = os.path.join("trader", "ir_watchlist.json")
 CSV_FIELDS = ("time", "tag", "tags", "symbol", "company", "title", "detail", "numbers", "source", "link", "id")
-
-TAGS = {"results": "Quarterly Results", "buyback": "Buybacks & Corporate Actions",
-        "orders": "Order Wins & Reg 30 Catalysts", "documents": "Presentations, Transcripts & Annual Reports",
-        "exchange": "Exchange & Surveillance Triggers", "other": "Other"}
-TAG_ORDER = ["exchange", "buyback", "results", "orders", "documents", "other"]
-
-RULES = {
-    "exchange": re.compile(r"price band|circuit (?:filter|limit)|\bASM\b|\bGSM\b|\bESM\b|additional surveillance|"
-                           r"graded surveillance|surveillance measure|futures (?:&|and) options|\bF&O\b|"
-                           r"derivatives? (?:contracts?|segment)|introduction of (?:\w+ )*(?:securities|stocks|"
-                           r"contracts)|exclusion of|inclusion (?:of|in)|index (?:rebalanc|review|replacement|"
-                           r"reconstitut)|rebalanc|\bMWPL\b|ban period|trade[- ]for[- ]trade|T2T", re.I),
-    "buyback": re.compile(r"buy[- ]?back|stock split|sub-?division|split of (?:equity )?shares|\bbonus\b|dividend|"
-                          r"record date|rights issue|\bex[- ]date|consolidation of shares|reduction of capital", re.I),
-    "results": re.compile(r"financial results?|quarterly results|un-?audited|audited (?:standalone|consolidated|"
-                          r"financial)|results for the (?:quarter|period|half)|integrated filing.{0,5}financial", re.I),
-    "orders": re.compile(r"bagging|receiving of orders|order(?:s)? (?:worth|valued|of|from|received|win|inflow)|"
-                         r"letter of (?:award|intent)|\bLoA\b|\bLoI\b|contract (?:worth|awarded|from|for|of)|"
-                         r"award(?:ed)? (?:of )?(?:a )?(?:contract|order|project)|acquisition|amalgamation|merger|"
-                         r"joint venture|\bMoU\b|memorandum of understanding|capacity expansion|commercial "
-                         r"production|commissioning|strategic partnership|scheme of arrangement|demerger", re.I),
-    "documents": re.compile(r"investor presentation|earnings (?:call|presentation)|con(?:ference)?\.? ?call|"
-                            r"transcript|annual report|analysts?/institutional investor meet|analyst meet", re.I),
-}
-NSE_DESC = {  # NSE's own announcement categories -> tag (checked before the text rules)
-    "Bagging/Receiving of orders/contracts": "orders", "Acquisition": "orders", "Amalgamation/Merger": "orders",
-    "Agreements": "orders", "Joint Venture": "orders", "Scheme of Arrangement": "orders",
-    "Investor Presentation": "documents", "Analysts/Institutional Investor Meet/Con. Call Updates": "documents",
-    "Annual Report": "documents", "Integrated Filing- Financial": "results", "Financial Result Updates": "results",
-    "Clarification - Financial Results": "results", "Buyback": "buyback", "Dividend": "buyback",
-    "Record Date": "buyback", "Bonus": "buyback", "Rights Issue": "buyback", "Stock Split": "buyback",
-}
-NOISE = re.compile(r"newspaper (?:publication|advertisement)|trading window|loss of share certificate|"
-                   r"duplicate share certificate|issue of duplicate|monitoring agency report", re.I)
-NOISE_DESC = {"Copy of Newspaper Publication", "Trading Window", "Loss of Share Certificates",
-              "Certificate under SEBI (Depositories and Participants) Regulations, 2018",
-              "Duplicate Share Certificate", "Monitoring Agency Report"}
-
-
-def tags_for(text, desc="", feed="", company=""):
-    """Every tag a filing earns, in priority order (first = primary). The company's own name is taken
-    out of the text first, so "GSM Foils Limited" is not a surveillance trigger."""
-    if company and len(company) > 3:
-        text = re.sub(re.escape(company), " ", text, flags=re.I)
-    found = []
-    if desc in NSE_DESC:
-        found.append(NSE_DESC[desc])
-    if feed in ("corporate_actions", "buyback"):
-        found.append("buyback")
-    if feed == "results":
-        found.append("results")
-    if feed == "annual_reports":
-        found.append("documents")
-    hay = "%s %s" % (desc, text)
-    for tag in TAG_ORDER:
-        if tag in RULES and RULES[tag].search(hay):
-            found.append(tag)
-    out = []
-    for t in TAG_ORDER:
-        if t in found and t not in out:
-            out.append(t)
-    return out or ["other"]
-
-
-def doc_kind(text):
-    if re.search(r"transcript", text, re.I):
-        return "transcript"
-    if re.search(r"presentation", text, re.I):
-        return "presentation"
-    if re.search(r"annual report", text, re.I):
-        return "annual report"
-    if re.search(r"audio|recording", text, re.I):
-        return "call recording"
-    return "meeting / call notice"
 
 
 def item(**kw):

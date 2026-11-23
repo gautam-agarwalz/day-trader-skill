@@ -9,7 +9,7 @@
   "plugins": [
     {
       "name": "day-trader-skill",
-      "description": "Eleven Claude skills for day trading on NSE: a chart scanner, a filings and exchange catalyst scanner, an entry timer, an exit planner, a time machine that replays 10,000 sessions, a risk manager, a budget manager, an order executor (paper by default, never without your yes), price and filing alerts, an earnings analyst and a smart money tracker.",
+      "description": "Eleven Claude skills for day trading on NSE: a chart scanner, a filings and exchange catalyst scanner, an entry timer, an exit planner, a time machine that replays 10,000 sessions and studies five years of NSE filings for overnight-gap and swing odds, a risk manager, a budget manager, an order executor (paper by default, never without your yes), price and filing alerts, an earnings analyst and a smart money tracker.",
       "source": "./",
       "category": "productivity",
       "homepage": "https://github.com/Jakeschincariol/day-trader-skill"

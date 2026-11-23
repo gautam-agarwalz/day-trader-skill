@@ -121,8 +121,10 @@ class Repo(unittest.TestCase):
         self.assertFalse(any(r.startswith(("yfinance", "pandas-datareader")) for r in reqs))
 
     def test_one_india_http_layer_shared_by_smart_money_and_catalysts(self):
-        for name, folders in (("india_http.py", ("trader-pelosi", "trader-news", "trader-analyst")),
-                              ("india_results.py", ("trader-analyst", "trader-news"))):
+        for name, folders in (("india_http.py", ("trader-pelosi", "trader-news", "trader-analyst", "trader-timemachine")),
+                              ("india_results.py", ("trader-analyst", "trader-news")),
+                              ("india_catalysts.py", ("trader-news", "trader-timemachine")),
+                              ("nse_data.py", ("trader-scanner", "trader-alerts", "trader-timemachine"))):
             with open(os.path.join(ROOT, folders[0], name), encoding="utf-8") as fh:
                 ref = fh.read()
             for f in folders[1:]:
