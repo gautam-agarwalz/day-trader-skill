@@ -268,10 +268,15 @@ def macro_levels(data, c):
     return True
 
 
-def build(args, notes):
+def build(args, notes, cands=None):
+    """The brief. cands: a candidate list from funnel.py (setups on the catalyst's side); by default every setup
+    in trader/orderblocks plus the macro engine's confirmations."""
     now = ih.now_ist().replace(second=0, microsecond=0)
     data = Data(args, notes, now)
-    cands, macro = candidates(args.base, now)
+    if cands is None:
+        cands, macro = candidates(args.base, now)
+    else:
+        macro = load(os.path.join(args.base, "macro", "latest.json"))
     orders = load(os.path.join(args.base, "orders", "latest.json"))
     reg = load(os.path.join(args.base, "regime", "latest.json"))        # regime.py (trader-scanner): warn only
     if reg and (reg.get("checked") or "")[:10] < (now - _dt.timedelta(days=4)).strftime("%Y-%m-%d"):

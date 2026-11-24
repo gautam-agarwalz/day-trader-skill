@@ -131,6 +131,8 @@ python3 trader-pelosi/smartmoney.py                                    # deals, 
 python3 trader-scanner/regime.py                                       # risk-on / neutral / risk-off: VIX, breadth, trend, FII
 python3 trader-scanner/global_macro_engine.py                          # gold, war, crude, tariffs, Fed, metals: 3 gates
 python3 trader-scanner/order_block_scanner.py                          # order blocks, sweep / absorption, anti-trap guards
+python3 trader-timemachine/funnel.py                                   # universe -> catalyst -> structure -> Time Machine, scored
+python3 trader-timemachine/funnel.py review                            # how past signals did, by verdict and stage
 python3 trader-timemachine/brief.py                                    # every setup through the Time Machine -> the brief
 python3 trader-timemachine/brief.py plan 1 --write                     # setup 1 -> trader/plan.json
 python3 trader-analyst/facts.py TCS INFY                               # quarters, growth, EPS, next results
@@ -237,7 +239,7 @@ trader-news/        SKILL.md, news.py, govt_orders_tracker.py, india_http.py, in
                     india_catalysts.py, india_market.py
 trader-entry/       SKILL.md, entry.py, india_signals.py, india_calendar.py
 trader-exit/        SKILL.md, exit.py, india_signals.py, india_calendar.py
-trader-timemachine/ SKILL.md, timemachine.py, events.py, brief.py, india_signals.py, india_catalysts.py,
+trader-timemachine/ SKILL.md, timemachine.py, events.py, brief.py, funnel.py, india_signals.py, india_catalysts.py,
                     india_http.py, nse_data.py, india_market.py, india_bars.py
 trader-risk/        SKILL.md, check.py, india_signals.py, india_calendar.py
 trader-budget/      SKILL.md, size.py, india_costs.py, config.example.json, targets.example.json

@@ -176,6 +176,30 @@ Schedule it every 15 minutes in the session with `/loop 15m` running
 `/trader-news`, then `/trader-pelosi`, then `events.py update` and
 `events.py suggest`.
 
+## The funnel (funnel.py): every screener in one scored pipeline
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/funnel.py"                         # score today's candidates -> trader/funnel/
+python3 "${CLAUDE_SKILL_DIR}/funnel.py" --refresh regime,macro  # run those tools first (also orders, news, smartmoney)
+python3 "${CLAUDE_SKILL_DIR}/funnel.py" review                  # what happened to past signals, by verdict and stage
+```
+
+Candidates come from the orders tracker, the filings scanner, the smart money tracker, the macro engine and the
+watchlist. Four stages score them; any stage can veto:
+1. Universe & safety (0-20): liquidity (Rs 100 cr+ 10, 25 cr+ 8, 10 cr+ 5; under 5 cr vetoed), trade-for-trade
+   series BE, ASM / GSM and a 5 % band vetoed, results tonight vetoes overnight holds; regime alignment 0-10.
+2. Catalyst & smart money (0-40), which sets the DIRECTION: order wins by size against market cap, cancellations,
+   delays and debarments, results 20 % either way, buybacks, smart money, the macro engine's gate-passed list,
+   and the event study's out-of-sample verdict for that filing type (+10 / -5).
+3. Structure (0-25): the order block scanner, run only on the survivors; an entry must be on the catalyst's side
+   (a setup the other way scores 0 and waits); one blocked by the anti-trap guards is vetoed.
+4. Time Machine (0-15): the brief's simulation after costs; no edge or too small a sample is vetoed.
+PASS at 60 points with no veto, WAIT when only the trigger is missing, FAIL otherwise; every candidate is shown
+with its reasons. Each run goes to `trader/journal/signals.csv`; `review` scores the signals from NSE's daily bars
+(the signal day's close, days 1, 3 and 5, stop or target first) by verdict and by the stage that vetoed, so you
+can see which stage earns its keep. Run it every 5-15 minutes in the session (`/loop 10m`) and `review` after
+the close.
+
 ## Universal Time Machine & trade brief (brief.py)
 
 ```bash

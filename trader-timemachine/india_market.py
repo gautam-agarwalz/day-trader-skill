@@ -112,20 +112,54 @@ def shares_outstanding(client, symbol, cache_path=CACHE):
     return n
 
 
-def parse_bhav_closes(text):
-    """sec_bhavdata_full CSV -> {SYMBOL: close} for series EQ / BE."""
+def parse_bhav(text):
+    """sec_bhavdata_full CSV -> {SYMBOL: {close, turnover_cr, series, deliv_pct}} for series EQ / BE
+    (BE is trade-for-trade: every trade settles by delivery, no intraday, no short selling)."""
     out = {}
     rd = csv.reader(io.StringIO((text or "").replace("\r", "")))
     head = [h.strip().upper() for h in next(rd, [])]
     if "SYMBOL" not in head or "CLOSE_PRICE" not in head:
         return out
-    si, se, ci = head.index("SYMBOL"), head.index("SERIES"), head.index("CLOSE_PRICE")
+    ix = {h: i for i, h in enumerate(head)}
     for r in rd:
-        if len(r) > ci and r[se].strip() in ("EQ", "BE"):
-            v = ih.num(r[ci])
-            if v:
-                out[r[si].strip().upper()] = v
+        if len(r) <= ix["CLOSE_PRICE"] or r[ix["SERIES"]].strip() not in ("EQ", "BE"):
+            continue
+        close = ih.num(r[ix["CLOSE_PRICE"]])
+        if not close:
+            continue
+        lacs = ih.num(r[ix["TURNOVER_LACS"]]) if "TURNOVER_LACS" in ix else None
+        out[r[ix["SYMBOL"]].strip().upper()] = {
+            "close": close, "series": r[ix["SERIES"]].strip(),
+            "turnover_cr": round(lacs / 100.0, 2) if lacs is not None else None,
+            "deliv_pct": ih.num(r[ix["DELIV_PER"]]) if "DELIV_PER" in ix else None}
     return out
+
+
+def parse_bhav_closes(text):
+    """sec_bhavdata_full CSV -> {SYMBOL: close} for series EQ / BE."""
+    return {k: v["close"] for k, v in parse_bhav(text).items()}
+
+
+def last_bhav(client, cache_path=CACHE, back=7):
+    """The latest bhavcopy, {SYMBOL: {close, turnover_cr, series, deliv_pct}} (cached for the day), and its date."""
+    doc = _cache(cache_path)
+    if doc.get("bhav"):
+        return doc["bhav"], doc.get("bhav_day")
+    now = ih.now_ist()
+    d = now.date() - _dt.timedelta(days=0 if now.strftime("%H:%M") >= "18:30" else 1)   # today's file after 18:30
+    for k in range(back):
+        if k:
+            d -= _dt.timedelta(days=1)
+        try:
+            got = parse_bhav(client.get_text(BHAV % d.strftime("%d%m%Y"), "bhav_%s.csv" % d.strftime("%d%m%Y")))
+        except ih.FeedError:
+            continue
+        if got:
+            doc["bhav"], doc["bhav_day"] = got, d.isoformat()
+            doc["closes"], doc["closes_day"] = {k_: v["close"] for k_, v in got.items()}, d.isoformat()
+            _save(doc, cache_path)
+            return got, d.isoformat()
+    return {}, None
 
 
 def last_closes(client, cache_path=CACHE, back=7):
@@ -133,20 +167,8 @@ def last_closes(client, cache_path=CACHE, back=7):
     doc = _cache(cache_path)
     if doc.get("closes"):
         return doc["closes"]
-    now = ih.now_ist()
-    d = now.date() - _dt.timedelta(days=0 if now.strftime("%H:%M") >= "18:30" else 1)   # today's file after 18:30
-    for _ in range(back):
-        if _:
-            d -= _dt.timedelta(days=1)
-        try:
-            got = parse_bhav_closes(client.get_text(BHAV % d.strftime("%d%m%Y"), "bhav_%s.csv" % d.strftime("%d%m%Y")))
-        except ih.FeedError:
-            continue
-        if got:
-            doc["closes"], doc["closes_day"] = got, d.isoformat()
-            _save(doc, cache_path)
-            return got
-    return {}
+    got, _ = last_bhav(client, cache_path, back)
+    return {k: v["close"] for k, v in got.items()}
 
 
 def market_cap_cr(client, symbol, cache_path=CACHE, user_path=USER_MCAPS, notes=None):
