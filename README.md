@@ -214,6 +214,16 @@ them fast; there is no inside information here.
 BSE's API often refuses cloud and foreign IPs, and the tools fall back to
 BSE's RSS feeds. Check anything that matters against your broker before you act.
 
+**Costs are counted.** `india_costs.py` prices every round trip: STT, stamp duty, NSE transaction
+and SEBI fees, GST, brokerage, DP charges and slippage by liquidity. The Time Machine, the event study,
+the brief and the budget report show results after them; the rates are editable in the config's
+`costs` block, and your contract note is the final word.
+
+**Prices are split-adjusted, holidays are NSE's.** NSE's daily history is raw, so splits and bonuses
+are detected and scaled out before any scan or replay. One holiday calendar (`india_calendar.py`)
+serves every tool, refreshed from NSE's own holiday API; trader-risk blocks entries in a year whose
+list is not loaded.
+
 **Taxes.** Intraday gains are taxed as speculative business income in India.
 Nothing here is tax advice.
 
@@ -224,14 +234,14 @@ trader-scanner/     SKILL.md, scan.py, global_macro_engine.py, order_block_scann
                     nse_data.py, india_signals.py, india_http.py, india_market.py, india_bars.py
 trader-news/        SKILL.md, news.py, govt_orders_tracker.py, india_http.py, india_results.py,
                     india_catalysts.py, india_market.py
-trader-entry/       SKILL.md, entry.py, india_signals.py
-trader-exit/        SKILL.md, exit.py, india_signals.py
+trader-entry/       SKILL.md, entry.py, india_signals.py, india_calendar.py
+trader-exit/        SKILL.md, exit.py, india_signals.py, india_calendar.py
 trader-timemachine/ SKILL.md, timemachine.py, events.py, brief.py, india_signals.py, india_catalysts.py,
                     india_http.py, nse_data.py, india_market.py, india_bars.py
-trader-risk/        SKILL.md, check.py, india_signals.py
-trader-budget/      SKILL.md, size.py, config.example.json, targets.example.json
+trader-risk/        SKILL.md, check.py, india_signals.py, india_calendar.py
+trader-budget/      SKILL.md, size.py, india_costs.py, config.example.json, targets.example.json
 trader-broker/      SKILL.md, ticket.py, claude_desktop_config.example.json
-trader-alerts/      SKILL.md, alerts.py, alerts.example.json, nse_data.py, india_signals.py
+trader-alerts/      SKILL.md, alerts.py, alerts.example.json, nse_data.py, india_signals.py, india_calendar.py
 trader-analyst/     SKILL.md, facts.py, india_http.py, india_results.py, metrics.example.json
 trader-pelosi/      SKILL.md, smartmoney.py, india_http.py
 tests/              unittest suite + offline fixtures
@@ -239,7 +249,8 @@ requirements.txt    Python packages (Python 3.10+)
 ```
 
 The shared modules (`nse_data.py`, `india_http.py`, `india_results.py`,
-`india_signals.py`, `india_catalysts.py`, `india_market.py`, `india_bars.py`) are copied into each folder that uses them so every skill
+`india_signals.py`, `india_catalysts.py`, `india_market.py`, `india_bars.py`, `india_calendar.py`,
+`india_costs.py`) are copied into each folder that uses them so every skill
 works on its own; the tests keep the copies identical.
 
 MIT. Made by [Jake Schincariol](https://opusjake.ai).

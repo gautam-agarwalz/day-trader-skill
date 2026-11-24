@@ -71,7 +71,8 @@ SEBI_RSS = "https://www.sebi.gov.in/sebirss.xml"
 OUT_DIR = os.path.join("trader", "catalysts")
 STATE = os.path.join("trader", "state", "catalysts.json")
 IR_WATCHLIST = os.path.join("trader", "ir_watchlist.json")
-CSV_FIELDS = ("time", "tag", "tags", "symbol", "company", "title", "detail", "numbers", "source", "link", "id")
+CSV_FIELDS = ("time", "tag", "tags", "symbol", "company", "title", "detail", "numbers", "source", "link", "id",
+              "event_date", "flags")
 
 
 def item(**kw):
@@ -663,10 +664,13 @@ def main(argv=None):
     else:
         sys.stdout.write(render(shown, notes))
     if not args.dry_run:
+        # the other tools read latest.json: it keeps every catalyst of the look-back window (new or already
+        # seen, whatever --mine / --tags showed), with "new" as a flag; the CSV gets every new one
+        window = [i for i in items if set(i["tags"]) - ({"other"} if not args.all_tags else set())]
         new = [i for i in items if i["new"]]
         ih.write_json(os.path.join(args.out, "latest.json"),
-                      {"checked": ih.now_ist().strftime("%Y-%m-%d %H:%M"), "items": shown, "notes": notes})
-        ih.append_csv(os.path.join(args.out, "alerts.csv"), [i for i in shown if i["new"]], CSV_FIELDS)
+                      {"checked": ih.now_ist().strftime("%Y-%m-%d %H:%M"), "items": window, "notes": notes})
+        ih.append_csv(os.path.join(args.out, "alerts.csv"), [i for i in window if i["new"]], CSV_FIELDS)
         for i in new:
             state.mark(i["id"])
         state.save()

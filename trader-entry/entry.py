@@ -64,6 +64,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import india_signals  # noqa: E402  (what trader-news and trader-pelosi know about a symbol)
+import india_calendar  # noqa: E402  (one NSE holiday list for every tool)
 
 UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Jakeschincariol/day-trader-skill)"
 PAUSE = 0.5      # seconds between requests to the free endpoint
@@ -75,26 +76,8 @@ INTERVALS = {"1m": 60, "5m": 300}
 DEFAULTS = {"no_entries_before": "09:30", "no_entries_after": "14:50"}
 EPOCH = datetime.datetime(1970, 1, 1)
 
-NSE_HOLIDAYS = {  # NSE equity segment trading holidays on weekdays, 2026 (NSE circulars)
-    "2026-01-15": "Municipal Corporation Elections in Maharashtra",
-    "2026-01-26": "Republic Day",
-    "2026-03-03": "Holi",
-    "2026-03-26": "Shri Ram Navami",
-    "2026-03-31": "Shri Mahavir Jayanti",
-    "2026-04-03": "Good Friday",
-    "2026-04-14": "Dr. Baba Saheb Ambedkar Jayanti",
-    "2026-05-01": "Maharashtra Day",
-    "2026-05-28": "Bakri Id",
-    "2026-06-26": "Muharram",
-    "2026-09-14": "Ganesh Chaturthi",
-    "2026-10-02": "Mahatma Gandhi Jayanti",
-    "2026-10-20": "Dussehra",
-    "2026-11-10": "Diwali Balipratipada",
-    "2026-11-24": "Prakash Gurpurb Sri Guru Nanak Dev",
-    "2026-12-25": "Christmas",
-}
+NSE_HOLIDAYS = india_calendar.NSE_HOLIDAYS  # NSE trading holidays: built-in 2026 + NSE's API + trader/nse_holidays.json
 NSE_EARLY_CLOSE = {}  # NSE has no scheduled early closes; add a date here if the exchange shortens a session
-CALENDAR_YEARS = (2026,)
 OPEN = datetime.time(9, 15)
 CLOSE = datetime.time(15, 30)
 EARLY = datetime.time(13, 0)
@@ -410,7 +393,7 @@ def evaluate(chart, now_utc, setup="orb", or_minutes=15, interval="5m", level=No
            "interval": interval, "or_minutes": or_minutes, "now": local.strftime("%Y-%m-%d %H:%M:%S"), "status": "waiting",
            "phase": "", "reason": "", "opening_range": None, "level": None, "trigger": None,
            "last": None, "forming": None, "min_volume_x": min_volume_x,
-           "prev_close": chart.get("prev_close"), "calendar_known": day.year in CALENDAR_YEARS, "_bars": []}
+           "prev_close": chart.get("prev_close"), "calendar_known": india_calendar.known(day.year), "_bars": []}
     dt = chart.get("data_time")
     res["data_time"] = to_ist(utc_of(dt)).strftime("%Y-%m-%d %H:%M:%S") if dt else None
     ok, why = trading_day(day)
@@ -628,7 +611,7 @@ def describe(res):
         out.append("Early close today at %s (%s): no new entries after %s." % (
             ampm(EARLY), res["early_close"], res["no_entries_after"]))
     if not res.get("calendar_known"):
-        out.append("Holiday list covers %s only: check nseindia.com for this date." % " and ".join(map(str, CALENDAR_YEARS)))
+        out.append("Holiday list covers %s only: check nseindia.com for this date." % " and ".join(map(str, india_calendar.years())))
     return out
 
 

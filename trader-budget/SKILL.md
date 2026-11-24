@@ -104,6 +104,11 @@ below the entry, the target is not above it (the move already happened), the
 plan is for another day, the ticker is blocked, or the plan is a short. Say
 the reason to the user in one line.
 
+The report also prices the round trip (`india_costs.py`): STT, stamp, exchange and SEBI fees, GST,
+brokerage, DP charges and slippage by liquidity, for intraday (MIS), delivery (swing) or futures, and
+gives the net max loss and the net reward:risk after them. Override the rates with a `costs` block in
+`trader/config.json`.
+
 ## Step 3: show the user
 
 Show the four limits, which one decided the size, the shares, the dollars

@@ -14,10 +14,10 @@ Sources (each on its own minimum interval, so a 60-second loop never hammers any
 source never stops the rest):
   nse     NSE corporate announcements, Regulation 30 (www.nseindia.in/api/corporate-announcements), 60 s
   bse     BSE announcements (the same collector as news.py; BSE's RSS when its API refuses), 60 s
-  gnews   Google News RSS searches (L1 bidder, letter of award, work order, MSEDCL, railways, power,
-          defence, NHAI / infra, cancellations, debarments, results), 120 s
-  press   Economic Times, Moneycontrol and LiveMint RSS, 120 s
-  pib     Press Information Bureau releases RSS (ministries: railways, power, defence, roads), 5 min
+  gnews   Google News RSS: 4 combined searches (L1 bidder, letter of award, work order, MSEDCL, railways,
+          power, defence, NHAI / infra, cancellations, debarments, results), 10 min
+  press   Economic Times, Moneycontrol and LiveMint RSS, 5 min
+  pib     Press Information Bureau releases RSS (ministries: railways, power, defence, roads), 10 min
   gem     GeM public bid / award lists (bidplus.gem.gov.in), 30 min, best effort
   cppp    CPPP / eProcure debarment lists (eprocure.gov.in), 30 min, best effort
 A page that shows a CAPTCHA or a login is skipped and said; it is never solved or worked around.
@@ -67,14 +67,15 @@ import india_market as im  # noqa: E402
 import india_catalysts as ic  # noqa: E402
 
 SOURCES = ("nse", "bse", "gnews", "press", "pib", "gem", "cppp")
-MIN_INTERVAL = {"nse": 60, "bse": 60, "gnews": 120, "press": 120, "pib": 300, "gem": 1800, "cppp": 1800}
+MIN_INTERVAL = {"nse": 60, "bse": 60, "gnews": 600, "press": 300, "pib": 600, "gem": 1800, "cppp": 1800}
 GNEWS = "https://news.google.com/rss/search?q=%s+when:%dd&hl=en-IN&gl=IN&ceid=IN:en"
+# Four combined searches (Google News takes OR), not one per phrase: about 24 requests an hour at the
+# 10-minute interval instead of hundreds, which would get this network throttled or CAPTCHA'd.
 GNEWS_QUERIES = [
-    '"L1 bidder"', '"letter of award"', '"work order" crore', '"order worth" crore', '"bags order"',
-    'MSEDCL order', 'Maharashtra tender L1', 'railway order crore', '"Rail Vikas" order', 'NHAI contract crore',
-    'defence ministry contract crore', 'power transmission order crore', '"contract terminated" crore',
-    '"order cancelled" company', 'debarred company tender', '"liquidated damages"',
-    'quarterly results net profit crore', 'shareholding promoter stake crore',
+    '"L1 bidder" OR "letter of award" OR "work order" OR "order worth" OR "bags order" OR "emerges L1"',
+    'MSEDCL OR NHAI OR "Rail Vikas" OR "railway order" OR "defence contract" OR "transmission order" crore',
+    '"contract terminated" OR "order cancelled" OR debarred OR blacklisted OR "liquidated damages" company',
+    '"net profit" OR "quarterly results" crore company',
 ]
 PRESS = [
     "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms",
@@ -678,7 +679,14 @@ def run_once(client, args, state, con, due=None):
     else:
         sys.stdout.write(render(shown, flags, notes, checked))
     if not args.dry_run:
-        ih.write_json(os.path.join(args.out, "latest.json"), doc)
+        # latest.json is what the macro engine, the order block scanner and the brief read: it keeps every item
+        # of the look-back window (from earlier passes and sources not due this pass too), "new" as a flag
+        since = (ih.now_ist() - _dt.timedelta(days=args.days + 1)).strftime("%Y-%m-%d")
+        window = {i["id"]: dict(i, new=False) for i in (ih.load_json(os.path.join(args.out, "latest.json")) or {})
+                  .get("items") or [] if (i.get("time") or "") >= since and not i["id"].startswith("ledger|")}
+        window.update({i["id"]: i for i in items})
+        ih.write_json(os.path.join(args.out, "latest.json"),
+                      dict(doc, items=sorted(window.values(), key=lambda i: i.get("time") or "", reverse=True)))
         ih.append_csv(os.path.join(args.out, "alerts.csv"), [i for i in items if i["new"]], CSV_FIELDS)
         for i in items:
             if i["new"]:

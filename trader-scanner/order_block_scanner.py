@@ -225,8 +225,9 @@ def plan_levels(bars, ob, entry, j, hi_idx, lo_idx):
     if risk <= 0:
         return None
     swing = None
-    pool = [bars[i]["h"] for i in hi_idx if i < j and bars[i]["h"] > entry] if bull else \
-        [bars[i]["l"] for i in lo_idx if i < j and bars[i]["l"] < entry]
+    # a fractal swing at i is only known at i + 2: no swing that needs bars after the signal
+    pool = [bars[i]["h"] for i in hi_idx if i + 2 < j and bars[i]["h"] > entry] if bull else \
+        [bars[i]["l"] for i in lo_idx if i + 2 < j and bars[i]["l"] < entry]
     if pool:
         swing = min(pool) if bull else max(pool)
     sgn = 1 if bull else -1
@@ -293,6 +294,13 @@ def evaluate(symbol, tf, bars, now_hhmm=None, daily=None, anchor=None, oi=None, 
             continue
         status = "entry" if (how and vwap_ok and not guards) else "blocked" if guards else "waiting"
         why = []
+        later = bars[j + 1:]                       # bars after the signal: did the trade already play out?
+        hit_stop = any((x["l"] <= lv["stop"]) if bull else (x["h"] >= lv["stop"]) for x in later)
+        hit_t1 = any((x["h"] >= lv["target1"]) if bull else (x["l"] <= lv["target1"]) for x in later)
+        if hit_stop or hit_t1:
+            status = "expired"
+            why.append("already played out after the %s signal: %s traded" % (
+                bar_close_time(b, tf) if b["time"] else b["date"], "the stop" if hit_stop else "target 1"))
         if not how:
             why.append("no sweep-and-reclaim or absorption candle yet (volume %sx, need %.1fx)"
                        % (vr if vr is not None else "?", VOL_CONFIRM))
@@ -427,7 +435,7 @@ def scan(args, notes):
                 bars = [b for b in bars if b["date"] < today or (b["date"] == today and bar_close_time(b, tf) <= clock)]
             setups += evaluate(sym, tf, bars, daily=daily_closed, anchor=anchors.get(sym), oi=oi.get(sym),
                                no_after=no_after)
-    order = {"entry": 0, "waiting": 1, "blocked": 2}
+    order = {"entry": 0, "waiting": 1, "blocked": 2, "expired": 3}
     setups.sort(key=lambda s: (order[s["status"]], s["symbol"], TIMEFRAMES.index(s["tf"])))
     return setups
 
@@ -437,7 +445,7 @@ def render(setups, notes, shown):
                                                                   sum(1 for s in setups if s["status"] == "entry"))]
     for s in shown:
         out.append("%s %-10s %-4s %-8s %-5s zone %.2f-%.2f  50%% %.2f  close %.2f  stop %.2f  T1 %.2f  T2 %.2f" % (
-            {"entry": "*", "waiting": " ", "blocked": "x"}[s["status"]], s["symbol"], s["tf"], s["mode"], s["side"],
+            {"entry": "*", "waiting": " ", "blocked": "x", "expired": "-"}[s["status"]], s["symbol"], s["tf"], s["mode"], s["side"],
             s["zone"][0], s["zone"][1], s["mean_threshold"], s["entry"], s["stop"], s["target1"], s["target2"]))
         bits = [s["status"].upper(), s["signal_time"]]
         if s["confirmation"]:

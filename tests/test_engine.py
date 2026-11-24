@@ -475,7 +475,7 @@ class Simulations(unittest.TestCase):
         gap = [[(0.95, 0.96, 0.94, 0.95), (1, 1, 1, 1), (1, 1, 1, 1)]] * 30
         r = ev.swing_paths(gap, 100, 97, 104, 1, 3, sims=500)
         self.assertEqual(r["outcomes"], {"stop gap": 100.0})
-        self.assertAlmostEqual(r["mean_net_pct"], -5.3, places=3, msg="the gap's loss, not the stop's, after costs")
+        self.assertAlmostEqual(r["mean_net_pct"], -5.0 - ev.COST, places=3, msg="the gap's loss, not the stop's, after costs")
         self.assertAlmostEqual(r["mae_R"]["p95"], 5 / 3, places=3)
         r = ev.swing_paths(gap, 100, 103, 96, -1, 3, sims=200)
         self.assertEqual(r["outcomes"], {"target gap": 100.0}, "the same gap is a short's target")

@@ -58,6 +58,9 @@ import math
 import os
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import india_costs  # noqa: E402  (STT, stamp, exchange, SEBI, GST, brokerage, DP, slippage)
+
 # v2 defaults: the contract's config.example.json. Missing keys fall back to these.
 DEFAULTS = {
     "budget": None,
@@ -472,7 +475,17 @@ def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=
         "mode": "swing" if swing else "day", "exit_by": plan.get("exit_by") if swing else None,
         "gap_risk_pct": gap_pct, "gap_loss": round(qty * gap_loss, 2) if gap_loss else None,
         "order_type": "limit" if limit is not None else "market", "refusal": refusal,
+        "costs": _costs(futures, swing, ref, target, qty, c),
     }
+
+
+def _costs(futures, swing, entry, target, qty, cfg):
+    """The round trip's charges and slippage (india_costs), for the report: product by how it is held."""
+    if not qty or not entry:
+        return None
+    product = "futures" if futures else "delivery" if swing else "intraday"
+    rt = india_costs.round_trip(product, entry, qty, cfg.get("turnover_cr"), cfg, exit_price=target)
+    return dict(rt, product=product)
 
 
 def bracket_order(s):
@@ -499,7 +512,7 @@ def bracket_order(s):
         "why": why,
         "plan": {"entry": s["entry"], "stop": s["stop"], "target": s["target"],
                  "risk_per_share": s["risk_per_share"], "max_loss": s["max_loss"], "setup": s["setup"],
-                 "entry_time": s["entry_time"], "flat_by": s["flat_by"]},
+                 "entry_time": s["entry_time"], "flat_by": s["flat_by"], "date": s.get("date")},
     })
     if s.get("blocked_windows"):
         o["plan"]["blocked_windows"] = s["blocked_windows"]
@@ -549,6 +562,17 @@ def plan_report(s, order, notes=()):
                     _price(s["risk_per_share"]), money(s["max_loss"])))
     lines.append("A stop is an order, not a promise: in a fast market it can fill %s %s."
                  % ("above" if s.get("short") else "below", _price(s["stop"])))
+    ct = s.get("costs")
+    if ct:
+        ch = ct["charges"]
+        gain = s["qty"] * abs(s["target"] - s["entry"])
+        lines.append("Costs (%s round trip): about %s: STT %s, brokerage + GST %s, stamp + exchange + SEBI %s%s, "
+                     "slippage %s. Net max loss about %s; net reward:risk %.2f." % (
+                         ct["product"], money(ct["total"]), money(ch["stt"]), money(ch["brokerage"] + ch["gst"]),
+                         money(ch["stamp"] + ch["exchange"] + ch["sebi"]),
+                         (", DP %s" % money(ch["dp"])) if ch["dp"] else "", money(ct["slippage"]),
+                         money(s["max_loss"] + ct["total"]),
+                         (gain - ct["total"]) / (s["max_loss"] + ct["total"]) if s["max_loss"] else 0))
     if s.get("instrument") == "futures":
         lines.append("Futures: %s. Margin is an estimate; your broker's SPAN + exposure margin decides."
                      % ("%d lot%s of %d" % (s["qty"] // s["lot_size"], "" if s["qty"] // s["lot_size"] == 1 else "s",

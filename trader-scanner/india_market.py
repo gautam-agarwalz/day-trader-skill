@@ -22,6 +22,7 @@ import re
 import zipfile
 
 import india_http as ih
+import india_calendar
 
 ARCH = "https://nsearchives.nseindia.com"
 EQUITY_L = ARCH + "/content/equities/EQUITY_L.csv"
@@ -35,24 +36,7 @@ CRORE = 1e7
 
 # ---------------------------------------------------------------- the session (mirrors trader-scanner/scan.py)
 
-NSE_HOLIDAYS = {  # NSE equity segment trading holidays on weekdays, 2026 (NSE circulars)
-    "2026-01-15": "Municipal Corporation Elections in Maharashtra",
-    "2026-01-26": "Republic Day",
-    "2026-03-03": "Holi",
-    "2026-03-26": "Shri Ram Navami",
-    "2026-03-31": "Shri Mahavir Jayanti",
-    "2026-04-03": "Good Friday",
-    "2026-04-14": "Dr. Baba Saheb Ambedkar Jayanti",
-    "2026-05-01": "Maharashtra Day",
-    "2026-05-28": "Bakri Id",
-    "2026-06-26": "Muharram",
-    "2026-09-14": "Ganesh Chaturthi",
-    "2026-10-02": "Mahatma Gandhi Jayanti",
-    "2026-10-20": "Dussehra",
-    "2026-11-10": "Diwali Balipratipada",
-    "2026-11-24": "Prakash Gurpurb Sri Guru Nanak Dev",
-    "2026-12-25": "Christmas",
-}
+NSE_HOLIDAYS = india_calendar.NSE_HOLIDAYS  # NSE trading holidays: built-in 2026 + NSE's API + trader/nse_holidays.json
 
 
 def trading_day(d):
@@ -96,8 +80,79 @@ def parse_quote_equity(doc):
     return round(shares * price / CRORE, 2), price
 
 
+SHP_MASTER = "/api/corporate-share-holdings-master?index=equities&symbol=%s"
+BHAV = ARCH + "/products/content/sec_bhavdata_full_%s.csv"
+SHARES_KEEP_DAYS = 100        # a shareholding pattern is filed every quarter
+
+
+def parse_shp_shares(xml):
+    """A shareholding-pattern XBRL -> total fully paid-up equity shares (the ShareholdingPattern_ContextI
+    total), or None."""
+    vals = [ih.num(v) for v in re.findall(r"<in-bse-shp:NumberOfFullyPaidUpEquityShares[^>]*contextRef=\""
+                                         r"ShareholdingPattern_ContextI\"[^>]*>([^<]+)<", xml or "")]
+    vals = [v for v in vals if v]
+    return max(vals) if vals else None
+
+
+def shares_outstanding(client, symbol, cache_path=CACHE):
+    """Equity shares from the company's latest shareholding filing (NSE's master list -> its XBRL)."""
+    doc = _cache(cache_path)
+    hit = (doc.get("shares") or {}).get(symbol)
+    old = (ih.now_ist() - _dt.timedelta(days=SHARES_KEEP_DAYS)).strftime("%Y-%m-%d")
+    if hit and hit.get("day", "") >= old:
+        return hit.get("n")
+    rows = client.nse_api(SHP_MASTER % symbol, "nse_shp_%s.json" % symbol) or []
+    rows = [r for r in rows if isinstance(r, dict) and r.get("xbrl")]
+    n = None
+    if rows:
+        n = parse_shp_shares(client.get_text(rows[0]["xbrl"], "shp_%s.xml" % symbol))
+    doc.setdefault("shares", {})[symbol] = {"n": n, "day": ih.now_ist().strftime("%Y-%m-%d"),
+                                           "as_of": rows[0].get("date") if rows else None}
+    _save(doc, cache_path)
+    return n
+
+
+def parse_bhav_closes(text):
+    """sec_bhavdata_full CSV -> {SYMBOL: close} for series EQ / BE."""
+    out = {}
+    rd = csv.reader(io.StringIO((text or "").replace("\r", "")))
+    head = [h.strip().upper() for h in next(rd, [])]
+    if "SYMBOL" not in head or "CLOSE_PRICE" not in head:
+        return out
+    si, se, ci = head.index("SYMBOL"), head.index("SERIES"), head.index("CLOSE_PRICE")
+    for r in rd:
+        if len(r) > ci and r[se].strip() in ("EQ", "BE"):
+            v = ih.num(r[ci])
+            if v:
+                out[r[si].strip().upper()] = v
+    return out
+
+
+def last_closes(client, cache_path=CACHE, back=7):
+    """Every stock's last close from the latest bhavcopy (cached for the day)."""
+    doc = _cache(cache_path)
+    if doc.get("closes"):
+        return doc["closes"]
+    now = ih.now_ist()
+    d = now.date() - _dt.timedelta(days=0 if now.strftime("%H:%M") >= "18:30" else 1)   # today's file after 18:30
+    for _ in range(back):
+        if _:
+            d -= _dt.timedelta(days=1)
+        try:
+            got = parse_bhav_closes(client.get_text(BHAV % d.strftime("%d%m%Y"), "bhav_%s.csv" % d.strftime("%d%m%Y")))
+        except ih.FeedError:
+            continue
+        if got:
+            doc["closes"], doc["closes_day"] = got, d.isoformat()
+            _save(doc, cache_path)
+            return got
+    return {}
+
+
 def market_cap_cr(client, symbol, cache_path=CACHE, user_path=USER_MCAPS, notes=None):
-    """Rs crore, or None when no source knows it (the caller says so instead of guessing)."""
+    """Rs crore, or None when no source knows it (the caller says so instead of guessing). In order:
+    trader/market_caps.json, NSE's quote API (issued shares x last price), then the shares in the latest
+    shareholding filing x the last bhavcopy close (when the quote API refuses the network)."""
     sym = str(symbol or "").upper()
     if not sym:
         return None
@@ -110,13 +165,26 @@ def market_cap_cr(client, symbol, cache_path=CACHE, user_path=USER_MCAPS, notes=
         return hit["cr"]
     if hit and hit.get("day") == doc["day"] and hit.get("failed"):
         return None
-    try:
-        cr, _ = parse_quote_equity(client.nse_api("/api/quote-equity?symbol=%s" % sym, "nse_quote_%s.json" % sym))
-    except ih.FeedError as e:
-        cr = None
-        if notes is not None and not any("market cap" in n for n in notes):
-            notes.append("market cap: NSE's quote API did not answer (%s); add caps to %s" % (str(e)[:90], user_path))
-    doc.setdefault("mcap", {})[sym] = {"cr": cr, "day": doc["day"], "failed": cr is None}
+    cr, how = None, None
+    if not doc.get("quote_api_down"):
+        try:
+            cr, _ = parse_quote_equity(client.nse_api("/api/quote-equity?symbol=%s" % sym, "nse_quote_%s.json" % sym))
+            how = "NSE quote"
+        except ih.FeedError as e:
+            doc["quote_api_down"] = str(e)[:120]          # one refusal is enough for the day
+    if cr is None:
+        try:
+            n = shares_outstanding(client, sym, cache_path)
+            px = last_closes(client, cache_path).get(sym)
+            if n and px:
+                cr, how = round(n * px / CRORE, 2), "shareholding filing x last close"
+        except ih.FeedError as e:
+            if notes is not None:
+                notes.append("market cap %s: %s" % (sym, str(e)[:100]))
+        doc = dict(_cache(cache_path), quote_api_down=doc.get("quote_api_down"))
+    if cr is None and notes is not None and not any("market cap:" in n for n in notes):
+        notes.append("market cap: no source answered (%s); add caps to %s" % (doc.get("quote_api_down") or "-", user_path))
+    doc.setdefault("mcap", {})[sym] = {"cr": cr, "day": doc["day"], "failed": cr is None, "how": how}
     _save(doc, cache_path)
     return cr
 

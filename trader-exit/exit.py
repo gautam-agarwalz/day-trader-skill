@@ -63,6 +63,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import india_signals  # noqa: E402  (what trader-news and trader-pelosi know about a symbol)
+import india_calendar  # noqa: E402  (one NSE holiday list for every tool)
 from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP
 
 UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Jakeschincariol/day-trader-skill)"
@@ -76,24 +77,7 @@ CENT = Decimal("0.01")
 EPOCH = datetime.datetime(1970, 1, 1)
 NOTE = "A stop is a plan, not a guarantee: a gap or a fast market can fill past it."
 
-NSE_HOLIDAYS = {  # NSE equity segment trading holidays on weekdays, 2026 (NSE circulars)
-    "2026-01-15": "Municipal Corporation Elections in Maharashtra",
-    "2026-01-26": "Republic Day",
-    "2026-03-03": "Holi",
-    "2026-03-26": "Shri Ram Navami",
-    "2026-03-31": "Shri Mahavir Jayanti",
-    "2026-04-03": "Good Friday",
-    "2026-04-14": "Dr. Baba Saheb Ambedkar Jayanti",
-    "2026-05-01": "Maharashtra Day",
-    "2026-05-28": "Bakri Id",
-    "2026-06-26": "Muharram",
-    "2026-09-14": "Ganesh Chaturthi",
-    "2026-10-02": "Mahatma Gandhi Jayanti",
-    "2026-10-20": "Dussehra",
-    "2026-11-10": "Diwali Balipratipada",
-    "2026-11-24": "Prakash Gurpurb Sri Guru Nanak Dev",
-    "2026-12-25": "Christmas",
-}
+NSE_HOLIDAYS = india_calendar.NSE_HOLIDAYS  # NSE trading holidays: built-in 2026 + NSE's API + trader/nse_holidays.json
 NSE_EARLY_CLOSE = {}  # NSE has no scheduled early closes; add a date here if the exchange shortens a session
 OPEN = datetime.time(9, 15)
 CLOSE = datetime.time(15, 30)
@@ -753,6 +737,10 @@ def build_plan(a, now_utc):
                         "stop; the max loss can be more than the stop says%s." % (
                             exit_by, hold, "" if hold == 1 else "s",
                             " (the event study's worst 5%% was -%s%%)" % num(D(a.gap_risk)) if a.gap_risk else ""))
+        for yr in sorted({day.year, exit_by.year}):
+            if not india_calendar.ensure(yr):
+                warnings.append("NSE's holiday list for %d is not loaded: the session count to %s may include "
+                                "holidays (add trader/nse_holidays.json)." % (yr, exit_by))
     today = to_ist(now_utc).date()
     if day != today:
         warnings.append("This plan is for %s, not today (%s)." % (day.isoformat(), today.isoformat()))

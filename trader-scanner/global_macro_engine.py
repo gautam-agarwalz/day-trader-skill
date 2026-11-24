@@ -42,6 +42,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -55,6 +56,7 @@ MAP = os.path.join(HERE, "macro_map.json")
 USER_MAP = os.path.join("trader", "macro_map.json")
 OUT_DIR = os.path.join("trader", "macro")
 GDELT = "https://api.gdeltproject.org/api/v2/doc/doc?query=%s&mode=%s&format=json&maxrecords=75&timespan=%s&sort=datedesc"
+GDELT_PAUSE = 5.5
 GNEWS = "https://news.google.com/rss/search?q=%s+when:1d&hl=en-IN&gl=IN&ceid=IN:en"
 
 
@@ -323,7 +325,9 @@ def run(args, notes):
     now_utc = now - ib.IST
     arts = []
     if not args.no_gdelt:
-        for name, th in themes.items():
+        for n_, (name, th) in enumerate(themes.items()):
+            if n_ and not args.offline:
+                time.sleep(GDELT_PAUSE)              # GDELT asks for about one request every 5 seconds
             try:
                 got = gdelt_articles(client, th.get("gdelt") or " OR ".join(th["keywords"]), args.hours, notes,
                                      use_package=not args.offline, keywords=th["keywords"])
@@ -352,7 +356,7 @@ def run(args, notes):
         g1, why1, t1 = gate1(group, tier1, mp.get("window_minutes", 15))
         g2, why2 = gate2_macro(th, d, moves)
         tone = None
-        if not args.no_gdelt and not args.offline:
+        if args.tone and not args.no_gdelt and not args.offline:
             try:
                 tone = gdelt_tone(client, th.get("gdelt") or name, args.hours)
             except ih.FeedError:
@@ -471,6 +475,7 @@ def main(argv=None):
     ap.add_argument("--map", help="a macro_map.json (default trader/macro_map.json, else this folder's)")
     ap.add_argument("--base", default="trader")
     ap.add_argument("--no-gdelt", action="store_true")
+    ap.add_argument("--tone", action="store_true", help="also read GDELT's tone timeline per event (shown, not gated)")
     ap.add_argument("--no-fno", action="store_true")
     ap.add_argument("--keep-pending", action="store_true", help="list gate-3 pending stocks in the actionable lists")
     ap.add_argument("--out", default=OUT_DIR)

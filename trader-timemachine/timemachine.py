@@ -80,6 +80,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import india_signals  # noqa: E402  (what trader-news and trader-pelosi know about a symbol)
+import india_costs  # noqa: E402  (STT, stamp, exchange, GST, brokerage, slippage)
 
 UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Jakeschincariol/day-trader-skill)"
 PAUSE = 0.5          # seconds between requests: be polite to free endpoints
@@ -736,7 +737,7 @@ def event_pool(etype, before, chart_for, now_utc, db=EVENTS_DB, limit=EVENT_POOL
 
 
 def time_machine(text, plan, now_utc, replays=10000, seed=19, window=2, until=None, source="yahoo",
-                 event_sessions=None, event_info=None):
+                 event_sessions=None, event_info=None, cost_r=None, turnover_cr=None):
     """Chart JSON text + a normalized plan -> the timemachine.json document.
     event_sessions: day-0 sessions of other stocks' past events of the same kind (event_pool); with at
     least EVENT_POOL_MIN of them the replays are drawn from those instead of the stock's own days."""
@@ -798,11 +799,17 @@ def time_machine(text, plan, now_utc, replays=10000, seed=19, window=2, until=No
     mc = dict(mc, until=clock24(until_min), pool_sessions=len(pool_from), pool_from=pool_from[0][0],
               pool_to=pool_from[-1][0], pool_kind="event days" if pool_note else "own days",
               band_times=[clock24(OPEN_MIN + 5 * (j + 1)) for j in range(k, last + 1)])
+    # costs: STT, stamp, exchange, SEBI, GST, brokerage and slippage for an intraday (MIS) round trip, in R
+    cr = cost_r if cost_r is not None else (india_costs.cost_r("intraday", plan["entry"], plan["stop"],
+                                                               turnover_cr=turnover_cr) or 0.0)
+    mc["cost_R"] = round(cr, 4)
+    mc["avg_R_net"] = round(mc["avg_R"] - cr, 3)
     abr = mc.get("avg_R_by_bar") or []
     if abr:
         best = max(range(len(abr)), key=abr.__getitem__)
-        mc["best_exit"] = {"time": mc["band_times"][best + 1], "avg_R": abr[best],
-                           "at_flat": {"time": mc["band_times"][-1], "avg_R": abr[-1]}}
+        mc["best_exit"] = {"time": mc["band_times"][best + 1], "avg_R": round(abr[best] - cr, 4),
+                           "at_flat": {"time": mc["band_times"][-1], "avg_R": round(abr[-1] - cr, 4)},
+                           "after_costs": True}
     rule = resolve_rule(plan, entry_day)
     plan_out = {kk: v for kk, v in plan.items() if v is not None}
     if rule:
@@ -869,6 +876,8 @@ def report(doc):
         % (until, m["median_close"], m["p5_close"], m["p95_close"]),
         "  Average R: %+.3f (R = the %.2f risk: %sR at the target, -1R at the stop)."
         % (m["avg_R"], p["risk_per_share"], ("+%g" % m["r_at_target"]), ),
+        "  After costs (STT, stamp, exchange, GST, brokerage, slippage: about %.2fR a trade): %+.3fR."
+        % (m.get("cost_R") or 0, m.get("avg_R_net", m["avg_R"])),
         "",
     ]
     if h.get("rule"):

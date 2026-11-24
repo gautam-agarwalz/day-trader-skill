@@ -264,7 +264,7 @@ def parse_yes(reply, order, batch_symbols=()):
     if DOUBT_WORDS & set(words[1:]):
         return False, "the reply has a condition or a doubt in it; ask again"
     sym = str(order.get("symbol", "")).upper()
-    tokens = set(re.findall(r"[A-Z][A-Z.\-]{0,6}", raw.upper()))
+    tokens = set(re.findall(r"[A-Z0-9][A-Z0-9&.\-]{0,19}", raw.upper()))     # NSE symbols run to 20 characters
     tokens |= set(re.findall(r"[A-Z0-9&\-]+\.NS\b", raw.upper()))   # NSE symbols: RELIANCE.NS, M&M.NS
     others = {s.upper() for s in batch_symbols} - {sym}
     named = tokens & others
@@ -391,32 +391,51 @@ def apply_fill(portfolio_path, cfg, symbol, side, qty, price, date):
     for p in pf.setdefault("positions", []):
         if str(p.get("ticker", "")).upper() == symbol:
             pos = p
-    if side == "buy":
-        if pos is None:
-            pos = {"ticker": symbol, "shares": 0.0, "lots": []}
-            pf["positions"].append(pos)
-        lots = pos.setdefault("lots", [])
-        lots.append({"id": "%s-%d" % (symbol, len(lots) + 1), "date": date, "shares": qty, "cost": cost})
-        pos["shares"] = round(float(pos.get("shares", 0)) + qty, 6)
-        pf["cash"] = round(float(pf.get("cash", 0)) - cost, 2)
-    else:
-        if pos is None or float(pos.get("shares", 0)) + 1e-9 < qty:
-            raise TicketError("cannot record selling %s %s: the portfolio holds %s"
-                              % (_str_num(qty), symbol, pos.get("shares", 0) if pos else 0))
-        left = qty
-        for lot in sorted(pos.get("lots", []), key=lambda l: l.get("date", "")):
+    if pos is None:
+        pos = {"ticker": symbol, "shares": 0.0, "lots": []}
+        pf["positions"].append(pos)
+    lots = pos.setdefault("lots", [])
+    held = float(pos.get("shares", 0))
+
+    def relieve(n, short):
+        """Take n shares off the oldest long lots (or short lots, held as negative shares)."""
+        left = n
+        for lot in sorted([l for l in lots if (float(l["shares"]) < 0) == short], key=lambda l: l.get("date", "")):
             if left <= 1e-9:
                 break
-            take = min(left, float(lot["shares"]))
-            per = float(lot["cost"]) / float(lot["shares"]) if float(lot["shares"]) else 0
+            size = abs(float(lot["shares"]))
+            take = min(left, size)
+            per = float(lot["cost"]) / size if size else 0
             lot["cost"] = round(float(lot["cost"]) - per * take, 2)
-            lot["shares"] = round(float(lot["shares"]) - take, 6)
+            lot["shares"] = round(float(lot["shares"]) + (take if short else -take), 6)
             left -= take
-        pos["lots"] = [l for l in pos.get("lots", []) if float(l["shares"]) > 1e-9]
-        pos["shares"] = round(float(pos["shares"]) - qty, 6)
-        if pos["shares"] <= 1e-9:
-            pf["positions"].remove(pos)
+        pos["lots"] = [l for l in lots if abs(float(l["shares"])) > 1e-9]
+
+    if side == "buy":
+        cover = min(qty, max(-held, 0.0))          # a buy first covers a short (an intraday MIS short)
+        if cover > 1e-9:
+            relieve(cover, short=True)
+        rest = qty - cover
+        if rest > 1e-9:
+            pos.setdefault("lots", []).append({"id": "%s-%d" % (symbol, len(pos["lots"]) + 1), "date": date,
+                                               "shares": rest, "cost": round(rest * price, 2)})
+        pos["shares"] = round(held + qty, 6)
+        pf["cash"] = round(float(pf.get("cash", 0)) - cost, 2)
+    else:
+        sell_long = min(qty, max(held, 0.0))
+        if sell_long > 1e-9:
+            relieve(sell_long, short=False)
+        rest = qty - sell_long
+        if rest > 1e-9:
+            if not cfg.get("allow_short"):
+                raise TicketError("cannot record selling %s %s: the portfolio holds %s and short selling is off "
+                                  "(\"allow_short\": true in the config)" % (_str_num(qty), symbol, _str_num(held)))
+            pos.setdefault("lots", []).append({"id": "%s-S%d" % (symbol, len(pos["lots"]) + 1), "date": date,
+                                               "shares": -rest, "cost": round(rest * price, 2)})
+        pos["shares"] = round(held - qty, 6)
         pf["cash"] = round(float(pf.get("cash", 0)) + cost, 2)
+    if abs(float(pos["shares"])) <= 1e-9:
+        pf["positions"].remove(pos)
     write_json(portfolio_path, pf)
     return pf
 
@@ -536,11 +555,13 @@ def cmd_result(a):
         new["broker_order_id"] = a.broker_id
     if a.note:
         new["note"] = a.note
+    filled = a.status == "placed" and a.filled_qty and a.filled_price
+    if filled:      # the portfolio first: a refused fill must not leave a half-written record
+        apply_fill(a.portfolio, cfg, rec["symbol"], rec["side"], a.filled_qty, a.filled_price, today)
     state["orders"].append(new)
     write_json(a.state, state)
     print("Recorded order %d as %s." % (a.index, a.status))
-    if a.status == "placed" and a.filled_qty and a.filled_price:
-        apply_fill(a.portfolio, cfg, rec["symbol"], rec["side"], a.filled_qty, a.filled_price, today)
+    if filled:
         log_fill(a.state, now, today, rec["symbol"], rec["side"], a.filled_qty, a.filled_price)
         print("Added the fill to %s." % a.portfolio)
     elif a.status == "placed":
@@ -579,15 +600,20 @@ def cmd_flatten(a):
         qty = sum(_f(p.get("shares", p.get("qty"))) or 0 for p in pf.get("positions", [])
                   if str(p.get("ticker") or p.get("symbol") or "").upper() == sym)
         source = a.portfolio
-        if qty <= 1e-9:
+        if qty < -1e-9:             # a short (negative shares): flatten is a buy that covers it
+            a.cover = True
+            qty = -qty
+        elif qty <= 1e-9:
             raise TicketError("nothing to flatten: no %s shares in %s. Check the broker (get_open_position "
                               "%s) and pass --qty if you do hold some" % (sym, a.portfolio, sym))
     plan = read_json(a.plan, "plan", required=False) or {}
     flat_by = (plan.get("flat_by") if str(plan.get("symbol", "")).upper() == sym else None) \
         or cfg.get("flat_by") or "15:15"
-    order = {"symbol": sym, "side": "sell", "qty": _str_num(qty), "type": "market", "time_in_force": "day",
-             "why": "flat by %s IST: closes the %s day trade before the close (qty from %s)"
-             % (flat_by, sym, source)}
+    cover = bool(getattr(a, "cover", False))
+    order = {"symbol": sym, "side": "buy" if cover else "sell", "qty": _str_num(qty), "type": "market",
+             "time_in_force": "day",
+             "why": "flat by %s IST: %s the %s day trade before the close (qty from %s)"
+             % (flat_by, "covers" if cover else "closes", sym, source)}
     old = read_json(a.orders, "orders", required=False)
     replaced = len(old.get("orders", [])) if isinstance(old, dict) else 0
     doc = {"created_by": "trader-broker", "created_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "status": "proposed",
@@ -674,7 +700,8 @@ def main(argv=None):
     p.add_argument("--portfolio", default="trader/portfolio.json")
     p.add_argument("--config", default="trader/config.json")
     p.add_argument("--state", default="trader/state/broker.json")
-    p = sub.add_parser("flatten", help="a sell ticket that closes a symbol's position by flat_by")
+    p = sub.add_parser("flatten", help="a ticket that closes a symbol's position by flat_by (a buy for a short)")
+    p.add_argument("--cover", action="store_true", help="the position is a short: the ticket buys it back")
     p.add_argument("--symbol", required=True)
     p.add_argument("--qty", help="shares you hold, from get_open_position (default: trader/portfolio.json)")
     p.add_argument("--orders", default="trader/orders.json", help="where the ticket is written")

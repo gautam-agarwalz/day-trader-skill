@@ -105,6 +105,11 @@ Warnings do not block, but say them to the user: a LIVE account, a number
 sent as a number instead of a string, a stop that lives only in the plan and
 not at the broker, a price too old to use, an early close today.
 
+Also blocked: an order sized for another day (its plan's date is not today), an entry in a year whose
+NSE holiday list is not loaded (`india_calendar.py` fetches it from NSE once a day; or add the dates to
+`trader/nse_holidays.json`), and an entry inside the anti-trap windows a brief plan carries (09:15-09:30,
+11:45-13:30). A short's risk is measured from the lower of the plan's entry and the live price.
+
 ## Catalysts
 
 When `/trader-news` and `/trader-pelosi` have run, each order's stock is

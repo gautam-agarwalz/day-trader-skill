@@ -46,6 +46,7 @@ import india_bars as ib  # noqa: E402
 import india_http as ih  # noqa: E402
 import india_market as im  # noqa: E402
 import india_signals  # noqa: E402
+import india_costs  # noqa: E402
 import events as ev  # noqa: E402
 import timemachine as tm  # noqa: E402
 
@@ -55,7 +56,17 @@ SWING_DAYS = 3
 SIMS = 10000
 BLOCKED_WINDOWS = (("09:15", "09:30", "opening noise (09:15-09:30)"),     # order_block_scanner's anti-trap guards
                    ("11:45", "13:30", "midday fakeouts (11:45-13:30)"))
-STOP_FLOOR_ATR = 0.35          # a macro (non order block) entry: stop at least this x the 14-day ATR away
+STOP_FLOOR_ATR = 0.35
+
+
+def anti_trap(hhmm, no_after="14:50"):
+    """The order block scanner's time guards for any intraday entry: None when the time is fine."""
+    for a, z, why in BLOCKED_WINDOWS:
+        if a <= hhmm <= z:
+            return why
+    if hhmm > no_after:
+        return "after no_entries_after %s" % no_after
+    return None          # a macro (non order block) entry: stop at least this x the 14-day ATR away
 
 
 # ---------------------------------------------------------------- data
@@ -100,6 +111,12 @@ class Data(object):
             self._daily[sym] = [r for r in rows if r["date"] < today]
         return self._daily[sym]
 
+    def turnover_cr(self, sym):
+        """Median daily turnover of the last 20 sessions, Rs crore (prices the slippage), or None."""
+        rows = self.daily(sym)[-20:]
+        vals = sorted(r["c"] * r["v"] / 1e7 for r in rows if r.get("v"))
+        return vals[len(vals) // 2] if vals else None
+
 
 # ---------------------------------------------------------------- the simulations
 
@@ -113,14 +130,16 @@ def intraday_tm(data, s, side, entry, stop, target, sims):
             "stop": stop, "target": target, "entry_time": hhmm, "setup": "order_block"}
     try:
         p = tm.normalize_plan(plan, "brief")
-        doc = tm.time_machine(text, p, data.now_utc, replays=sims, until="15:15")
+        doc = tm.time_machine(text, p, data.now_utc, replays=sims, until="15:15",
+                              turnover_cr=data.turnover_cr(s["symbol"]))
     except tm.TMError as e:
         return {"error": str(e)}
     mc = doc["mc"]
     return {"engine": "timemachine (own 60-day 5-min sessions)", "replays": mc["replays"],
             "sessions": mc["pool_sessions"], "win_pct": round(mc["p_green"] * 100, 1),
             "p_target": round(mc["p_target"] * 100, 1), "p_stop": round(mc["p_stop"] * 100, 1),
-            "p_open_at_flat": round(mc["p_neither"] * 100, 1), "expectancy_R": mc["avg_R"],
+            "p_open_at_flat": round(mc["p_neither"] * 100, 1), "expectancy_R": mc["avg_R_net"],
+            "expectancy_R_gross": mc["avg_R"], "cost_R": mc["cost_R"],
             "rr": mc["r_at_target"], "mae_R": mc.get("mae_R"), "best_exit": mc.get("best_exit"),
             "median_close": mc["median_close"], "p5_close": mc["p5_close"], "p95_close": mc["p95_close"],
             "verdict": doc["verdict"], "warnings": doc["warnings"]}
@@ -129,10 +148,13 @@ def intraday_tm(data, s, side, entry, stop, target, sims):
 def swing_tm(data, sym, side, entry, stop, target, sims, event_type=None):
     rows = data.daily(sym)
     out = {}
+    product = "delivery" if side == "long" else "futures"       # an overnight short is only possible in futures
+    cost = india_costs.cost_pct(product, turnover_cr=data.turnover_cr(sym))
     w = ev.windows_from_bars(rows, SWING_DAYS)
     if len(w) >= 20:
-        r = ev.swing_paths(w, entry, stop, target, 1 if side == "long" else -1, SWING_DAYS, sims)
-        out = dict(r, engine="events.swing_paths (own daily history, %d windows)" % r["windows"])
+        r = ev.swing_paths(w, entry, stop, target, 1 if side == "long" else -1, SWING_DAYS, sims, cost=cost)
+        out = dict(r, engine="events.swing_paths (own daily history, %d windows)" % r["windows"], product=product,
+                   after_tax_pct=india_costs.after_tax(product, r["mean_net_pct"]))
     else:
         out = {"error": "only %d daily windows for %s (need 20)" % (len(w), sym)}
     if event_type and os.path.exists(data.args.events_db):
@@ -142,7 +164,7 @@ def swing_tm(data, sym, side, entry, stop, target, sims, event_type=None):
             evs = ev.collect(con, cal, [event_type], before=data.now.strftime("%Y-%m-%d %H:%M"))
             ew = ev.windows_from_events(evs, SWING_DAYS)
             if len(ew) >= ev.MIN_EVENTS:
-                r = ev.swing_paths(ew, entry, stop, target, 1 if side == "long" else -1, SWING_DAYS, sims)
+                r = ev.swing_paths(ew, entry, stop, target, 1 if side == "long" else -1, SWING_DAYS, sims, cost=cost)
                 out["event_pool"] = dict(r, engine="%d past %s events, day-0 paths" % (len(ew), event_type))
             con.close()
         except Exception as e:  # the event pool is extra: never fatal
@@ -216,7 +238,7 @@ def macro_levels(data, c):
         return False
     bars = ib.parse(text, data.now_utc)
     t = c["signal_time"]
-    hit = [b for b in bars if "%s %s" % (b["date"], b["time"]) <= t]
+    hit = [b for b in bars if "%s %s" % (b["date"], b["time"]) < t]     # t is the gate-3 bar's END: start < end
     if not hit:
         return False
     b = hit[-1]
@@ -247,6 +269,8 @@ def build(args, notes):
     items = india_signals.load_all(args.base)
     active, caution, waiting = [], [], []
     for c in macro.get("caution") or []:
+        if not c.get("gates_1_2"):           # an unconfirmed headline is not a headwind
+            continue
         caution.append({"symbol": c["symbol"], "kind": "macro headwind", "why": c["why"]})
     for f in orders.get("watch") or []:
         caution.append({"symbol": f["symbol"], "kind": f["flag"], "why": (f.get("why") or f.get("title") or "")[:160],
@@ -257,6 +281,9 @@ def build(args, notes):
             caution.append({"symbol": sym, "kind": "retail trap guard", "why": "%s %s %s: %s" % (
                 c["tf"], c["side"], c["origin"], "; ".join(g.replace("blocked: ", "") for g in c["guards"]))})
             continue
+        if c["status"] == "expired":            # stop or target already traded after the signal
+            notes.append("%s %s %s: %s" % (sym, c["tf"], c["side"], "; ".join(c.get("why_not") or [])[-120:]))
+            continue
         if c["status"] == "waiting":
             waiting.append({"symbol": sym, "tf": c["tf"], "side": c["side"], "zone": c.get("zone"),
                             "why": "; ".join(c.get("why_not") or [])})
@@ -264,6 +291,12 @@ def build(args, notes):
         if c.get("entry") is None and not macro_levels(data, c):
             notes.append("%s: no bars for the macro entry" % sym)
             continue
+        if c["origin"].startswith("macro"):             # the same anti-trap windows as order-block entries
+            g = anti_trap(c["signal_time"][11:16], args.no_entries_after)
+            if g:
+                caution.append({"symbol": sym, "kind": "retail trap guard",
+                                "why": "%s %s: %s" % (c["side"], c["origin"], g)})
+                continue
         sig = india_signals.signals_for(sym, now, 3, items=items)
         flags = india_signals.risk_flags(sig, now)
         lot = fno.get(sym)
@@ -413,9 +446,18 @@ def markdown(doc):
     return "\n".join(lines)
 
 
-def to_plan(r, now):
-    """An active setup -> trader/plan.json (the shape /trader-exit, budget, risk and alerts read)."""
-    swing = r["mode"] == "swing" and r["side"] == "long"
+class PlanError(Exception):
+    pass
+
+
+def to_plan(r, now, futures=False):
+    """An active setup -> trader/plan.json (the shape /trader-exit, budget, risk and alerts read).
+    futures=True: the [SECONDARY F&O SWING SHORT OPTION] leg, an overnight stock-futures short in whole lots."""
+    if futures:
+        if im.TAG_FNO_SHORT not in r["tags"] or not (r.get("fno") or {}).get("lot"):
+            raise PlanError("setup %s has no F&O swing-short leg (it needs an F&O stock out of the ban period with a "
+                            "multi-day bearish setup)" % r["symbol"])
+    swing = (r["mode"] == "swing" and r["side"] == "long") or futures
     risk = abs(r["entry"] - r["stop"])
     hhmm = r["signal_time"][11:16]
     plan = {"created_by": "trader-timemachine brief.py", "symbol": r["symbol"],
@@ -426,7 +468,8 @@ def to_plan(r, now):
             "risk_per_share": round(risk, 2),
             "reward_risk": round(abs(r["target1"] - r["entry"]) / risk, 2) if risk else None,
             "flat_by": None if swing else "15:15", "mode": "swing" if swing else "day",
-            "exit_by": r.get("exit_by") if swing else None, "hold_sessions": SWING_DAYS if swing else 0,
+            "exit_by": (r.get("exit_by") or next_sessions(r["signal_time"][:10], SWING_DAYS)[-1]) if swing else None,
+            "hold_sessions": SWING_DAYS if swing else 0,
             "gap_risk_pct": abs((r["swing"] or {}).get("p5_pct") or 0) or None if swing else None,
             "tags": r["tags"], "source": "%s %s" % (r["origin"], r["signal_time"]),
             "blocked_windows": [list(w) for w in BLOCKED_WINDOWS] if not swing else [],
@@ -434,6 +477,8 @@ def to_plan(r, now):
             "note": "From the trade brief. History, not a forecast; an overnight gap can open past any stop."}
     if r["side"] == "short":
         plan["short"] = True
+    if futures:
+        plan.update({"instrument": "futures", "lot_size": int(r["fno"]["lot"])})
     return plan
 
 
@@ -443,10 +488,12 @@ def main(argv=None):
     ap.add_argument("n", nargs="?", type=int, help="plan: the setup number from the brief")
     ap.add_argument("--base", default="trader")
     ap.add_argument("--sims", type=int, default=SIMS)
+    ap.add_argument("--no-entries-after", default="14:50", help="last intraday entry time (14:50)")
     ap.add_argument("--months", type=int, default=24, help="daily history for the swing replay (24 months)")
     ap.add_argument("--events-db", default=ev.DB_PATH)
     ap.add_argument("--out", default=OUT_DIR)
     ap.add_argument("--write", action="store_true", help="plan: write trader/plan.json")
+    ap.add_argument("--futures", action="store_true", help="plan: the F&O swing-short leg (stock futures, whole lots)")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--now", help='pin the clock, India time: "2026-10-23 13:05"')
@@ -460,7 +507,11 @@ def main(argv=None):
             print("brief.py plan: pick a setup 1..%d from %s" % (len(rows), os.path.join(a.out, "latest.json")),
                   file=sys.stderr)
             return 2
-        plan = to_plan(rows[a.n - 1], ih.now_ist())
+        try:
+            plan = to_plan(rows[a.n - 1], ih.now_ist(), futures=a.futures)
+        except PlanError as e:
+            print("brief.py plan: %s" % e, file=sys.stderr)
+            return 2
         print(json.dumps(plan, indent=2))
         if a.write:
             ih.write_json(PLAN, plan)

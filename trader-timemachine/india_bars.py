@@ -134,11 +134,11 @@ def parse(text, now_utc=None, nse_session=None):
         start = _utc(ts)
         local = start + IST
         if step < 1440:
-            if int(ts) % (step * 60) and nse:
-                continue                                   # the live tick, off the grid
+            mins = local.hour * 60 + local.minute
+            if nse and (local.second or (mins - OPEN_MIN) % step):
+                continue                                   # the live tick, off the 9:15-based grid (60m: 9:15, 10:15...)
             if start + _dt.timedelta(minutes=step) > now:
                 continue                                   # not complete yet
-            mins = local.hour * 60 + local.minute
             if nse and not (OPEN_MIN <= mins < CLOSE_MIN):
                 continue
         out[int(ts)] = {"date": local.date().isoformat(), "time": local.strftime("%H:%M") if step < 1440 else "",

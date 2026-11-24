@@ -31,6 +31,7 @@ EOD_URL = "https://mcp.nseindia.in/bhavcopy/cm/mcp"
 TIMEOUT = 20.0          # seconds for one tool call
 SESSION_TIMEOUT = 900.0  # seconds for a whole batch on one connection
 CONCURRENCY = 6          # tool calls in flight on one connection: be polite to NSE
+CHUNK = 250              # calls per connection: a slow batch loses at most one chunk's unanswered calls
 QUOTE_TIMEOUT = 45.0     # seconds for one live quote: NSE answers in ~10 s and queues calls one by one
 QUOTE_CONCURRENCY = 2
 EQUITY_PAGE = 500        # cm_get_equity_stocks returns at most 500 rows a call
@@ -89,11 +90,11 @@ def _payload(result):
     return doc
 
 
-async def _call_many(url, calls, timeout, concurrency):
+async def _call_many(url, calls, timeout, concurrency, out=None):
     from mcp import ClientSession
     from mcp.client.streamable_http import streamable_http_client
 
-    out = [None] * len(calls)
+    out = [None] * len(calls) if out is None else out     # filled as answers arrive: kept on a timeout
     async with streamable_http_client(url, terminate_on_close=False) as streams:
         async with ClientSession(streams[0], streams[1]) as session:
             await asyncio.wait_for(session.initialize(), timeout)
@@ -123,18 +124,24 @@ def call_tools(url, calls, timeout=TIMEOUT, concurrency=CONCURRENCY, session_tim
         import mcp  # noqa: F401  (the SDK: pip install -r requirements.txt)
     except ImportError:
         return [(False, "the mcp SDK is not installed (pip install -r requirements.txt)")] * len(calls)
-    try:
-        res = asyncio.run(asyncio.wait_for(_call_many(url, calls, timeout, concurrency), session_timeout))
-    except asyncio.TimeoutError:
-        return [(False, "timed out: no answer from %s" % url)] * len(calls)
-    except BaseException as e:  # connection refused, DNS, proxy, TLS... (anyio wraps them in groups)
-        if isinstance(e, (KeyboardInterrupt, SystemExit)):
-            raise
-        inner = e
-        while getattr(inner, "exceptions", None):
-            inner = inner.exceptions[0]
-        return [(False, "could not reach NSE (%s): %s" % (url, str(inner) or type(inner).__name__))] * len(calls)
-    return [r if r is not None else (False, "no answer") for r in res]
+    results = []
+    for i in range(0, len(calls), CHUNK):      # one connection and one session timeout per chunk
+        part = calls[i:i + CHUNK]
+        out = [None] * len(part)
+        fail = "no answer"
+        try:
+            asyncio.run(asyncio.wait_for(_call_many(url, part, timeout, concurrency, out), session_timeout))
+        except asyncio.TimeoutError:
+            fail = "timed out: no answer from %s" % url
+        except BaseException as e:  # connection refused, DNS, proxy, TLS... (anyio wraps them in groups)
+            if isinstance(e, (KeyboardInterrupt, SystemExit)):
+                raise
+            inner = e
+            while getattr(inner, "exceptions", None):
+                inner = inner.exceptions[0]
+            fail = "could not reach NSE (%s): %s" % (url, str(inner) or type(inner).__name__)
+        results += [r if r is not None else (False, fail) for r in out]     # answers that arrived are kept
+    return results
 
 
 # ---------------------------------------------------------------- parsers (pure)
@@ -169,8 +176,54 @@ def day_ts(date_text):
     return int((d + datetime.timedelta(hours=9, minutes=15) - IST - EPOCH).total_seconds())
 
 
+# Price multipliers a split, bonus or consolidation leaves on the ex-date (new price / old price):
+# splits 1:2 .. 1:10, bonuses 1:1 (1/2), 1:2 (2/3), 2:1 (1/3), 3:1 (1/4), 1:3 (3/4), 3:2 (2/5),
+# 2:3 (3/5), and consolidations 2:1, 5:1, 10:1.
+ACTION_FACTORS = (0.1, 0.2, 0.25, 1 / 3.0, 0.4, 0.5, 0.6, 2 / 3.0, 0.75, 2.0, 5.0, 10.0)
+
+
+def split_factor(prev_close, open_, close):
+    """The ex-date multiplier when a day's open and close both sit on a split / bonus ratio of the previous
+    close, else None. NSE's daily history (get_stock_history) is NOT adjusted: TATASTEEL closed 959.40 on
+    2022-07-27 and 100.35 on 2022-07-28 (a 1:10 split). A 20 % price band caps a real gap well short of the
+    big ratios; the near ones (3/4, 2/3, 3/5) need a closer match so a genuine crash is not mistaken."""
+    if not prev_close or not open_ or not close:
+        return None
+    ro, rc = open_ / prev_close, close / prev_close
+    if 0.8 <= ro <= 1.25:
+        return None
+    best = min(ACTION_FACTORS, key=lambda k: abs(ro / k - 1))
+    tol = 0.06 if (best <= 0.5 or best >= 2) else 0.025
+    if abs(ro / best - 1) <= tol and abs(rc / best - 1) <= 0.2:
+        return best
+    return None
+
+
+def adjust_rows(rows):
+    """Sorted daily rows -> (rows with every bar before an ex-date scaled by its factor, [{date, factor}]).
+    Prices are multiplied by the factor and volumes divided, so returns, ATR and levels run across the
+    split as if it had always been there."""
+    out = [dict(r) for r in rows]
+    found = []
+    for i in range(1, len(out)):
+        k = split_factor(_num(out[i - 1].get("close")), _num(out[i].get("open")), _num(out[i].get("close")))
+        if k is None:
+            continue
+        found.append({"date": str(out[i]["date"])[:10], "factor": round(k, 4)})
+        for r in out[:i]:
+            for f in ("open", "high", "low", "close"):
+                v = _num(r.get(f))
+                if v is not None:
+                    r[f] = round(v * k, 4)
+            v = _num(r.get("volume"))
+            if v is not None:
+                r["volume"] = round(v / k)
+    return out, found
+
+
 def rows_to_series(rows, sym=""):
-    """[{date, open, high, low, close, volume}] (any order) -> the scanner's daily series."""
+    """[{date, open, high, low, close, volume}] (any order) -> the scanner's daily series, adjusted for
+    splits and bonuses (meta.adjustments lists them)."""
     by_day = {}
     for r in rows:
         if r.get("date") and _num(r.get("close")) is not None:
@@ -178,13 +231,14 @@ def rows_to_series(rows, sym=""):
     days = sorted(by_day)
     if not days:
         raise NSEError("no daily bars for %s" % sym)
-    pick = [by_day[d] for d in days]
+    pick, adjustments = adjust_rows([by_day[d] for d in days])
     last = pick[-1]
     return {"t": [day_ts(d) for d in days], "o": [_num(r.get("open")) for r in pick],
             "h": [_num(r.get("high")) for r in pick], "l": [_num(r.get("low")) for r in pick],
             "c": [_num(r.get("close")) for r in pick], "v": [_num(r.get("volume")) for r in pick],
             "meta": {"symbol": nse_symbol(sym), "regularMarketPrice": _num(last.get("close")),
-                     "regularMarketVolume": _num(last.get("volume")), "currency": "INR"}}
+                     "regularMarketVolume": _num(last.get("volume")), "currency": "INR",
+                     "adjustments": adjustments}}
 
 
 def history_rows(doc):

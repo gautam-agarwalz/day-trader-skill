@@ -24,7 +24,8 @@
         "max_loss": 46.88,
         "setup": "orb",
         "entry_time": "10:00 AM",
-        "flat_by": "15:15"
+        "flat_by": "15:15",
+        "date": "2026-10-19"
       }
     }
   ]

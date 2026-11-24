@@ -180,6 +180,7 @@ Schedule it every 15 minutes in the session with `/loop 15m` running
 ```bash
 python3 "${CLAUDE_SKILL_DIR}/brief.py"                 # trader/orderblocks + macro + orders -> trader/brief/
 python3 "${CLAUDE_SKILL_DIR}/brief.py" plan 1 --write  # setup 1 -> trader/plan.json for exit, budget, risk
+python3 "${CLAUDE_SKILL_DIR}/brief.py" plan 1 --futures --write   # its F&O swing-short leg (stock futures)
 ```
 
 Every candidate from the order block scanner and the macro engine, long or
@@ -194,7 +195,10 @@ short, intraday or swing, is simulated before it is shown:
   costs, MAE, how trades ended, the average for exiting on day 1, 2 or 3; with
   `trader/history/events.sqlite`, also other stocks' days after the same event;
 - a long gets both, and the brief names the optimal exit window (intraday by
-  HH:MM, or day 2 / day 3).
+  HH:MM, or day 2 / day 3);
+- every figure is after costs (`india_costs.py`: STT, stamp, exchange, SEBI,
+  GST, brokerage, DP, slippage by the stock's turnover; futures costs for the
+  F&O short leg), and the swing line adds the after-tax figure (20 % STCG).
 
 The brief: (a) `[EQUITY LONG]` / `[EQUITY SHORT]` setups with their routing tags
 (`[SECONDARY F&O]` only where eligible), the order block zone, the 50 %

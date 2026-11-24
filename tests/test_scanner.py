@@ -557,6 +557,7 @@ class Cli(unittest.TestCase):
         doc = self.read(self.wl)
         self.assertEqual((doc["mode"], doc["universe"], doc["scanned"], doc["failed"]), ("daily", 19, 2, 17))
         self.assertEqual(doc["hits"], [{"symbol": "KO", "setups": ["breakout_20d"], "price": 93.9,
+                                        "level": 92.0, "ma20": 88.17,      # the 20-day high trader-entry's level uses
                                         "close_date": "2026-10-16", "rsi": 75.3, "volume": 3680307}])
         self.assertEqual(doc["as_of"], "2026-10-16 close")
 

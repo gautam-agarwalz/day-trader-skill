@@ -43,8 +43,13 @@ def v1(**over):
 
 
 def tsla(**over):
+    """The reel's order. Its plan is dated 2026-10-19; the window tests run it on other days, so the date is
+    dropped unless keep_date=True (the stale-order test keeps it)."""
+    keep = over.pop("keep_date", False)
     with open(TSLA_PATH) as fh:
         o = json.load(fh)["orders"][0]
+    if not keep:
+        o["plan"].pop("date", None)
     o.update(over)
     return o
 
@@ -245,6 +250,11 @@ class DayTradeChecks(unittest.TestCase):
         orders = [bracket(s, 1, 50.0, 49.0, 52.0) for s in ("RELIANCE.NS", "M&M.NS", "BAJAJ-AUTO.NS")]
         res = check.check(orders, cfg(), now=at(NOW))
         self.assertEqual(verdicts(res), ["PASS", "PASS", "PASS"], reasons(res))
+
+    def test_an_order_sized_for_another_day_is_blocked(self):
+        self.assertEqual(verdicts(self.one(tsla(keep_date=True), now="2026-10-19 10:15")), ["PASS"])
+        self.assertIn("stale: this order was sized for 2026-10-19",
+                      reasons(self.one(tsla(keep_date=True), now="2026-10-21 10:15")))
 
     def test_entry_window_india_time(self):
         cases = [("2026-10-19 09:29", "no new entries before 09:30 IST (it is 09:29)"),

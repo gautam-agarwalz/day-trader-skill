@@ -79,6 +79,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import nse_data  # noqa: E402  (NSE's official MCP servers + the backup hook; this folder)
+import india_calendar  # noqa: E402  (one NSE holiday list for every tool)
 import india_signals  # noqa: E402  (what trader-news and trader-pelosi know about a symbol)
 
 UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Jakeschincariol/day-trader-skill)"
@@ -93,26 +94,8 @@ MIN_DAILY_BARS = 30
 DEFAULT_UNIVERSE = "trader/universe.txt"
 NOTE = "A scan is a list of charts that match a rule, not a list of stocks to buy."
 
-NSE_HOLIDAYS = {  # NSE equity segment trading holidays on weekdays, 2026 (NSE circulars)
-    "2026-01-15": "Municipal Corporation Elections in Maharashtra",
-    "2026-01-26": "Republic Day",
-    "2026-03-03": "Holi",
-    "2026-03-26": "Shri Ram Navami",
-    "2026-03-31": "Shri Mahavir Jayanti",
-    "2026-04-03": "Good Friday",
-    "2026-04-14": "Dr. Baba Saheb Ambedkar Jayanti",
-    "2026-05-01": "Maharashtra Day",
-    "2026-05-28": "Bakri Id",
-    "2026-06-26": "Muharram",
-    "2026-09-14": "Ganesh Chaturthi",
-    "2026-10-02": "Mahatma Gandhi Jayanti",
-    "2026-10-20": "Dussehra",
-    "2026-11-10": "Diwali Balipratipada",
-    "2026-11-24": "Prakash Gurpurb Sri Guru Nanak Dev",
-    "2026-12-25": "Christmas",
-}
+NSE_HOLIDAYS = india_calendar.NSE_HOLIDAYS  # NSE trading holidays: built-in 2026 + NSE's API + trader/nse_holidays.json
 NSE_EARLY_CLOSE = {}  # NSE has no scheduled early closes; add a date here if the exchange shortens a session
-CALENDAR_YEARS = (2026,)
 OPEN = datetime.time(9, 15)
 CLOSE = datetime.time(15, 30)
 EARLY = datetime.time(13, 0)
@@ -513,6 +496,7 @@ def scan_daily(data, symbols, now_utc, min_price, min_volume):
         tags, nums = find_setups(closes)
         if tags:
             hits.append({"symbol": sym, "setups": tags, "price": round(closes[-1], 2),
+                         "level": round(nums["high20"], 2), "ma20": round(nums["ma20"], 2),
                          "close_date": d_last.isoformat(), "rsi": round(nums["rsi"], 1),
                          "volume": int(vol) if vol is not None else None})
     hits.sort(key=lambda h: (-(h["price"] * (h["volume"] or 0)), h["symbol"]))  # most dollars traded first

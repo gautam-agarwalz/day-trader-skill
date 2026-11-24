@@ -68,6 +68,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import india_signals  # noqa: E402  (what trader-news and trader-pelosi know about a symbol)
+import india_calendar  # noqa: E402  (one NSE holiday list for every tool)
 
 DEFAULTS = {
     "budget": None, "cash_buffer_pct": 10, "max_position_pct": 75, "max_order_inr": 4000,
@@ -93,26 +94,8 @@ FRESH_MINUTES = 15
 REF_WORDS = {"plan": "the plan's entry", "price": "the latest price", "limit": "the limit price",
              "stop price": "the stop price", "stale price": "an old price"}
 
-NSE_HOLIDAYS = {  # NSE equity segment trading holidays on weekdays, 2026 (NSE circulars)
-    "2026-01-15": "Municipal Corporation Elections in Maharashtra",
-    "2026-01-26": "Republic Day",
-    "2026-03-03": "Holi",
-    "2026-03-26": "Shri Ram Navami",
-    "2026-03-31": "Shri Mahavir Jayanti",
-    "2026-04-03": "Good Friday",
-    "2026-04-14": "Dr. Baba Saheb Ambedkar Jayanti",
-    "2026-05-01": "Maharashtra Day",
-    "2026-05-28": "Bakri Id",
-    "2026-06-26": "Muharram",
-    "2026-09-14": "Ganesh Chaturthi",
-    "2026-10-02": "Mahatma Gandhi Jayanti",
-    "2026-10-20": "Dussehra",
-    "2026-11-10": "Diwali Balipratipada",
-    "2026-11-24": "Prakash Gurpurb Sri Guru Nanak Dev",
-    "2026-12-25": "Christmas",
-}
+NSE_HOLIDAYS = india_calendar.NSE_HOLIDAYS  # NSE trading holidays: built-in 2026 + NSE's API + trader/nse_holidays.json
 NSE_EARLY_CLOSE = {}  # NSE has no scheduled early closes; add a date here if the exchange shortens a session
-CALENDAR_YEARS = (2026,)
 OPEN = datetime.time(9, 15)
 CLOSE = datetime.time(15, 30)
 EARLY = datetime.time(13, 0)
@@ -214,9 +197,10 @@ def window_check(now_ist, c):
         return [], []
     warns = []
     d, t = now_ist.date(), now_ist.time().replace(second=0, microsecond=0)
-    if d.year not in CALENDAR_YEARS:
-        warns.append("the holiday list covers %s only: check nseindia.com for %s"
-                     % (" and ".join(map(str, CALENDAR_YEARS)), d.isoformat()))
+    if not india_calendar.ensure(d.year):      # an unknown year is not "every weekday is open"
+        return ["window: NSE's holiday list for %d is not loaded (known: %s). It is fetched from NSE once a day; "
+                "or add the circular's dates to trader/nse_holidays.json" % (
+                    d.year, ", ".join(map(str, india_calendar.years())) or "none")], warns
     ok, why = trading_day(d)
     stamp = now_ist.strftime("%a %Y-%m-%d %H:%M")
     if not ok:
@@ -527,11 +511,13 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
         if ref is None:
             cands = [(p, w) for p, w in ((plan_entry, "plan"), (live, "price")) if p]
             if cands:
-                ref, ref_from = max(cands, key=lambda x: x[0])
+                # the worse fill: the higher price for a buy, the lower for a short sale (more risk to its stop)
+                worse = min if side == "sell" else max
+                ref, ref_from = worse(cands, key=lambda x: x[0])
                 ref = _cent(ref)
-                if live and ref_from == "price" and plan_entry and live > plan_entry + CENT:
-                    info.append("%s last %s is above the plan's entry %s: the risk is measured from %s"
-                                % (sym, _p(ref), _p(plan_entry), _p(ref)))
+                if live and ref_from == "price" and plan_entry and abs(live - plan_entry) > CENT:
+                    info.append("%s last %s is %s the plan's entry %s: the risk is measured from %s"
+                                % (sym, _p(ref), "below" if side == "sell" else "above", _p(plan_entry), _p(ref)))
             elif sym in prices:
                 ref, ref_from = prices[sym], "stale price"
         if plan_entry and live is None and sym in prices and price_times is not None and typ == "market":
@@ -575,7 +561,16 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
         cash = acct["cash"]
         total = cash + sum(acct["values"].values())
         buffer_inr = total * float(c.get("cash_buffer_pct") or 0) / 100.0
-        if value is not None and side == "buy" and kind == "entry":
+        if kind == "entry" and plan.get("date") and str(plan["date"]) != today:
+            reasons.append("stale: this order was sized for %s and it is %s: size it again from today's plan"
+                           % (plan["date"], today))
+        if value is not None and side == "buy" and kind == "entry" and futures:
+            # a stock future ties up margin, not the contract value (trader-budget sizes it the same way)
+            mpct = float(sw.get("futures_margin_pct") or 20)
+            if cash - value * mpct / 100.0 < -CENT:
+                later.append("cash: about %s margin (%s%% of %s) but only %s cash" % (
+                    money(value * mpct / 100.0), _pct(mpct), money(value), money(cash)))
+        elif value is not None and side == "buy" and kind == "entry":
             after_cash = cash - value
             if after_cash < -CENT and not c.get("allow_margin"):
                 later.append("cash: needs %s but only %s cash; that would be margin (borrowed money)"

@@ -127,6 +127,9 @@ class Repo(unittest.TestCase):
                               ("india_catalysts.py", ("trader-news", "trader-timemachine")),
                               ("india_market.py", ("trader-news", "trader-scanner", "trader-timemachine")),
                               ("india_bars.py", ("trader-scanner", "trader-timemachine")),
+                              ("india_calendar.py", ("trader-scanner", "trader-entry", "trader-exit", "trader-risk",
+                                                     "trader-alerts", "trader-timemachine", "trader-news")),
+                              ("india_costs.py", ("trader-timemachine", "trader-budget")),
                               ("india_signals.py", ("trader-alerts", "trader-entry", "trader-exit", "trader-risk",
                                                     "trader-scanner", "trader-timemachine")),
                               ("nse_data.py", ("trader-scanner", "trader-alerts", "trader-timemachine"))):

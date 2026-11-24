@@ -56,30 +56,13 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import nse_data  # noqa: E402  (NSE's official MCP servers + the backup hook; this folder)
+import india_calendar  # noqa: E402  (one NSE holiday list for every tool)
 import india_signals  # noqa: E402  (what trader-news and trader-pelosi know about a symbol)
 
 HHMM = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
 
-NSE_HOLIDAYS = {  # NSE equity segment trading holidays on weekdays, 2026 (NSE circulars)
-    "2026-01-15": "Municipal Corporation Elections in Maharashtra",
-    "2026-01-26": "Republic Day",
-    "2026-03-03": "Holi",
-    "2026-03-26": "Shri Ram Navami",
-    "2026-03-31": "Shri Mahavir Jayanti",
-    "2026-04-03": "Good Friday",
-    "2026-04-14": "Dr. Baba Saheb Ambedkar Jayanti",
-    "2026-05-01": "Maharashtra Day",
-    "2026-05-28": "Bakri Id",
-    "2026-06-26": "Muharram",
-    "2026-09-14": "Ganesh Chaturthi",
-    "2026-10-02": "Mahatma Gandhi Jayanti",
-    "2026-10-20": "Dussehra",
-    "2026-11-10": "Diwali Balipratipada",
-    "2026-11-24": "Prakash Gurpurb Sri Guru Nanak Dev",
-    "2026-12-25": "Christmas",
-}
+NSE_HOLIDAYS = india_calendar.NSE_HOLIDAYS  # NSE trading holidays: built-in 2026 + NSE's API + trader/nse_holidays.json
 NSE_EARLY_CLOSE = {}  # NSE has no scheduled early closes; add a date here if the exchange shortens a session
-CALENDAR_YEARS = (2026,)
 OPEN = datetime.time(9, 15)
 CLOSE = datetime.time(15, 30)
 EARLY = datetime.time(13, 0)
@@ -139,7 +122,7 @@ def market_status(now_utc):
     d = local.date()
     ok, reason = trading_day(d)
     st = {"now_ist": local.strftime("%Y-%m-%d %H:%M"), "date": d.isoformat(),
-          "weekday": local.strftime("%A"), "calendar_known": d.year in CALENDAR_YEARS,
+          "weekday": local.strftime("%A"), "calendar_known": india_calendar.known(d.year),
           "open": False, "reason": reason, "early_close": NSE_EARLY_CLOSE.get(d.isoformat())}
     s = session(d)
     if s:
@@ -484,7 +467,7 @@ def cmd_clock(a):
         if not st["open"] and st.get("next_open"):
             print("Next open: %s IST." % st["next_open"])
         if not st["calendar_known"]:
-            print("Holiday list covers %s only: check nseindia.com for this date." % " and ".join(map(str, CALENDAR_YEARS)))
+            print("Holiday list covers %s only: check nseindia.com for this date." % " and ".join(map(str, india_calendar.years())))
     return 0 if st["open"] else 1
 
 

@@ -48,7 +48,9 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import india_http as ih  # noqa: E402
+import india_calendar  # noqa: E402  (one NSE holiday list for every tool)
 import india_catalysts as ic  # noqa: E402
+import india_costs  # noqa: E402
 
 DB_PATH = os.path.join("trader", "history", "events.sqlite")
 IDEAS_DIR = os.path.join("trader", "ideas")
@@ -64,7 +66,9 @@ SOURCES = ("bars", "filings", "meetings", "bands", "deals", "fno")
 FIRST_BHAV = _dt.date(2020, 12, 1)     # the full bhavcopy (with delivery) starts here
 SERIES = ("EQ", "BE")
 OPEN_HM, CLOSE_HM = "09:15", "15:30"
-COST = 0.30            # % a round trip for a delivery trade (STT, charges, slippage)
+# % a round trip for a delivery trade in a Rs 25 cr a day stock: STT, stamp, exchange, SEBI, GST, DP and
+# slippage (india_costs.py; about 0.34 %). suggest() prices each stock by its own liquidity and product.
+COST = round(india_costs.cost_pct("delivery", turnover_cr=25), 3)
 MIN_EVENTS = 30
 MIN_TURNOVER_CR = 1.0  # median daily turnover over the 20 sessions before day 0
 SIMS = 10000
@@ -75,24 +79,7 @@ HORIZONS = (1, 2, 3, 5, 10)
 MAX_EVENTS = 6000                 # most recent events used per study (speed)
 OOS_MONTHS = 12
 BANDS_PCT = (0.02, 0.05, 0.10, 0.20)
-NSE_HOLIDAYS = {  # NSE equity segment trading holidays on weekdays, 2026 (NSE circulars)
-    "2026-01-15": "Municipal Corporation Elections in Maharashtra",
-    "2026-01-26": "Republic Day",
-    "2026-03-03": "Holi",
-    "2026-03-26": "Shri Ram Navami",
-    "2026-03-31": "Shri Mahavir Jayanti",
-    "2026-04-03": "Good Friday",
-    "2026-04-14": "Dr. Baba Saheb Ambedkar Jayanti",
-    "2026-05-01": "Maharashtra Day",
-    "2026-05-28": "Bakri Id",
-    "2026-06-26": "Muharram",
-    "2026-09-14": "Ganesh Chaturthi",
-    "2026-10-02": "Mahatma Gandhi Jayanti",
-    "2026-10-20": "Dussehra",
-    "2026-11-10": "Diwali Balipratipada",
-    "2026-11-24": "Prakash Gurpurb Sri Guru Nanak Dev",
-    "2026-12-25": "Christmas",
-}
+NSE_HOLIDAYS = india_calendar.NSE_HOLIDAYS  # NSE trading holidays: built-in 2026 + NSE's API + trader/nse_holidays.json
 BUCKETS = ((-1e9, -5, "down >5%"), (-5, -2, "down 2-5%"), (-2, 0, "down 0-2%"),
            (0, 2, "up 0-2%"), (2, 5, "up 2-5%"), (5, 1e9, "up >5%"))
 ENTRY_TEXT = {"close0": "buy at the day-0 close (15:10-15:25)", "open1": "buy at the open the session after day 0",
@@ -1127,11 +1114,14 @@ def suggest(con, now, items, quotes=None, cost=COST, min_turnover=MIN_TURNOVER_C
         on_day0 = stamp[:10] == day0 and stamp >= day0 + " " + OPEN_HM
         bucket = bucket_of(move) if (move is not None and on_day0) else None
         def studied(side, ents, keep=None, label=""):
-            key = (et, sess, bucket, ents, side, label)
+            # the real round trip for this product and this stock's liquidity, unless --cost was given
+            c_ = cost if cost != COST else india_costs.cost_pct(
+                {"intraday": "intraday", "futures": "futures"}.get(label, "delivery"), turnover_cr=turnover)
+            key = (et, sess, bucket, ents, side, label, round(c_, 3))
             if key not in cache:
-                st_ = study(con, et, sess, bucket, side, cost, min_turnover, sims, cal, entries=ents, keep=keep, before=stamp)[0]
+                st_ = study(con, et, sess, bucket, side, c_, min_turnover, sims, cal, entries=ents, keep=keep, before=stamp)[0]
                 if bucket and not st_["rules"].get("best"):
-                    st_ = study(con, et, sess, None, side, cost, min_turnover, sims, cal, entries=ents, keep=keep, before=stamp)[0]
+                    st_ = study(con, et, sess, None, side, c_, min_turnover, sims, cal, entries=ents, keep=keep, before=stamp)[0]
                 cache[key] = st_
             return cache[key]
         direction = ic.EVENT_DIRECTION.get(et, "?")
@@ -1465,7 +1455,7 @@ def main(argv=None):
     pl.add_argument("--config", default=os.path.join("trader", "config.json"))
     pl.add_argument("--write", nargs="?", const=os.path.join("trader", "plan.json"), metavar="PATH")
     for p in (s, g):
-        p.add_argument("--cost", type=float, default=COST, help="round-trip cost in %% (default 0.30)")
+        p.add_argument("--cost", type=float, default=COST, help="round-trip cost in %% (default: by product and liquidity, india_costs.py)")
         p.add_argument("--min-turnover", type=float, default=MIN_TURNOVER_CR, help="Rs cr a day (default 1)")
         p.add_argument("--sims", type=int, default=SIMS)
     args = ap.parse_args(argv)
