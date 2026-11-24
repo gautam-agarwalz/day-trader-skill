@@ -680,6 +680,14 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
                     plan.get("exit_by"), ", gap risk %s%%" % _num(plan["gap_risk_pct"]) if plan.get("gap_risk_pct") else ""))
             else:
                 later.extend(win_reasons)
+            for w in plan.get("blocked_windows") or []:      # the order block scanner's anti-trap windows
+                try:
+                    a_, z_, why_ = str(w[0]), str(w[1]), str(w[2]) if len(w) > 2 else "blocked window"
+                except (TypeError, IndexError):
+                    continue
+                if a_ <= now_ist.strftime("%H:%M") <= z_:
+                    later.append("window: %s %s-%s IST (the setup's anti-trap guard; it is %s)"
+                                 % (why_.split(" (")[0], a_, z_, now_ist.strftime("%H:%M")))
             if c.get("pdt_guard") and pdt_n >= 3:
                 later.append("pdt: %d day trades in the last 5 business days (%s); a 4th trips the "
                              "pattern-day-trader rule your broker applies (\"pdt_guard\": true)"

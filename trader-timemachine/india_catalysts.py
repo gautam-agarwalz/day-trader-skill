@@ -117,7 +117,28 @@ EVENT_RULES = [
                                    r"reinstat)", re.I | re.S)),
     ("cfo_change", "?", re.compile(r"(?:appoint|resign|cessation).{0,160}(?:chief financial|\bCFO\b)|"
                                    r"(?:chief financial|\bCFO\b).{0,160}(?:appoint|resign|cessation)", re.I | re.S)),
+    # government / contract execution risk (trader-news govt_orders_tracker.py): checked before order_win,
+    # since "termination of the contract awarded ..." also mentions an award
+    ("order_cancel", "down", re.compile(r"(?:cancell?(?:ation|ed)|terminat(?:ion|ed)|foreclos(?:ure|ed)|short[- ]clos(?:ure|ed)|"
+                                        r"withdr(?:awal|awn|ew)|annul(?:ment|led)|revok(?:ed|ation)|scrapp(?:ed|ing))\b.{0,80}"
+                                        r"(?:orders?|contracts?|letter of (?:award|intent)|\bLoA\b|work order|tender)|"
+                                        r"(?:orders?|contracts?|letter of (?:award|intent)|\bLoA\b|work order|tender)\b.{0,80}"
+                                        r"(?:cancell?ed|terminated|foreclosed|short[- ]closed|withdrawn|annulled|revoked|scrapped)",
+                                        re.I | re.S)),
+    # "is not debarred from holding the office of Director" is in every director appointment: not a debarment
+    ("debarment", "down", re.compile(r"(?<!not )(?<!never )\bdebar(?:red|ment)\b(?! from holding)(?!.{0,40}office of "
+                                     r"(?:a |the )?director)|(?<!not )black-?list(?:ed|ing)?|banned from (?:bidding|participating)|"
+                                     r"suspen(?:sion|ded) of business dealings|holiday listing", re.I)),
+    ("execution_delay", "down", re.compile(r"delay(?:s|ed)? in (?:the )?(?:execution|completion|commissioning|delivery)|"
+                                           r"liquidated damages|\bLDs? (?:levied|imposed|deducted)|penalty (?:levied|imposed) "
+                                           r"(?:by|for) (?:the )?(?:client|employer|authority)|encashment of (?:the )?"
+                                           r"(?:bank|performance) guarantee", re.I)),
+    ("order_milestone", "up", re.compile(r"(?:successful(?:ly)? )?completion of (?:the )?(?:project|order|contract|work)|"
+                                         r"successfully (?:commissioned|completed|delivered)|handed over to (?:the )?"
+                                         r"(?:client|customer|authority)|commercial operation date|declared (?:\bCOD\b|"
+                                         r"commercial operation)|milestone payment", re.I)),
     ("order_win", "up", re.compile(r"^bagging|receiving of orders|order(?:s)? (?:worth|valued|received|win|inflow)|"
+                                   r"\bL-?1 (?:bidder|bid)|lowest bidder|emerged as (?:the )?L-?1\b|"
                                    r"\b(?:wins?|won|bags?|bagged|secures?|secured|receives?|received|receipt of)\b.{0,40}\b(?:orders?|contracts?)\b|"
                                    r"letter of (?:award|intent)|\bLoA\b|contract (?:worth|awarded)|award(?:ed)? "
                                    r"(?:of )?(?:a )?(?:contract|order|project)", re.I)),
@@ -144,7 +165,8 @@ EVENT_FAMILY = {  # a rare type falls back to its family when it has too few pas
     "board_meeting_buyback": "board_meeting", "board_meeting_bonus_split": "board_meeting",
     "board_meeting_fundraise": "board_meeting", "board_meeting_results": "board_meeting",
     "buyback": "corporate_action", "bonus_split": "corporate_action", "dividend": "corporate_action",
-    "order_win": "business", "acquisition": "business", "demerger": "business", "capacity": "business",
+    "order_win": "business", "order_milestone": "business", "order_cancel": "distress", "debarment": "distress",
+    "execution_delay": "distress", "acquisition": "business", "demerger": "business", "capacity": "business",
     "fundraise": "business", "rating_up": "rating", "rating_down": "rating", "default": "distress",
     "pledge_release": "pledge", "pledge_created": "pledge", "insider_trade": "smart_money", "sast": "smart_money",
     "price_query": "speculation", "media_clarification": "speculation", "results": "results",
@@ -156,6 +178,17 @@ EVENT_FAMILY = {  # a rare type falls back to its family when it has too few pas
 EVENT_NOISE = re.compile(r"investor meet|con(?:ference)?\.? ?call|earnings call|call transcript|analysts? meet", re.I)
 
 
+# "Order" in a filing is often a tax, court or regulator's order, not a contract: those are never order
+# wins, cancellations or delays (a GST demand order is not a work order).
+NOT_CONTRACT = re.compile(r"\b(?:GST|CGST|SGST|IGST|income[- ]tax|tax|assessment|adjudicat\w*|demand|show[- ]cause|"
+                          r"penalty|court|tribunal|NCLT|NCLAT|high court|supreme court|arbitral award|SEBI|ROC|"
+                          r"registrar of companies|regional director|RD|competition commission|CCI|customs|excise|"
+                          r"ministry of corporate affairs|MCA)\b.{0,40}\border\b|\border\b.{0,40}\b(?:under section|"
+                          r"of the (?:hon'?ble )?(?:court|tribunal)|passed by|issued by the (?:GST|tax|income)|demand)|"
+                          r"scheme of arrangement|name change|change (?:in|of) name", re.I | re.S)
+CONTRACT_TYPES = ("order_win", "order_cancel", "execution_delay", "order_milestone")
+
+
 def event_type(text, desc="", company=""):
     """(type, direction) for one filing, or (None, None) when it is routine."""
     if company and len(company) > 3:
@@ -165,6 +198,9 @@ def event_type(text, desc="", company=""):
         return None, None
     for t, d, rx in EVENT_RULES:
         if rx.search(hay):
+            if t in CONTRACT_TYPES and NOT_CONTRACT.search(hay) and not re.search(
+                    r"bagging|receiving of orders|letter of (?:award|intent)|work order|purchase order", hay, re.I):
+                continue
             return t, d
     return None, None
 

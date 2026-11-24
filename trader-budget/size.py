@@ -468,6 +468,7 @@ def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=
         "budget": budget, "cash_buffer_pct": buf_pct, "cash_buffer": cash_buffer, "cash_available": available,
         "max_loss_per_trade_inr": max_loss, "limits": limits, "qty": qty, "bound_by": bound[0],
         "cost": cost, "max_loss": loss, "flat_by": None if swing else (plan.get("flat_by") or c.get("flat_by")),
+        "blocked_windows": plan.get("blocked_windows") or None,
         "mode": "swing" if swing else "day", "exit_by": plan.get("exit_by") if swing else None,
         "gap_risk_pct": gap_pct, "gap_loss": round(qty * gap_loss, 2) if gap_loss else None,
         "order_type": "limit" if limit is not None else "market", "refusal": refusal,
@@ -500,6 +501,8 @@ def bracket_order(s):
                  "risk_per_share": s["risk_per_share"], "max_loss": s["max_loss"], "setup": s["setup"],
                  "entry_time": s["entry_time"], "flat_by": s["flat_by"]},
     })
+    if s.get("blocked_windows"):
+        o["plan"]["blocked_windows"] = s["blocked_windows"]
     if s.get("short"):
         o["plan"]["side"] = "sell"
         o["product"] = "intraday (MIS) short: covered by the flat-by"

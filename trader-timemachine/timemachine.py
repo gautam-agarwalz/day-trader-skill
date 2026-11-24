@@ -350,15 +350,19 @@ def simulate(pool, entry, stop, target, k, last, replays=10000, seed=19, window=
     rng = random.Random(seed)
     choice = rng.choice
     outcomes, closes, paths = [], [], []
+    maes, hit_steps = [], []
+    sum_r = [0.0] * (last - k)          # average R if you got out at the close of each bar (exit window)
     for n in range(replays):
         p = entry
         outcome = None
         keep = n < SAMPLE_PATHS
         path = [entry]
-        for i in range(k + 1, last + 1):
+        adverse = 0.0
+        for step, i in enumerate(range(k + 1, last + 1)):
             o, h, l, c = choice(pool[slot(rng, i)])
             hi, lo, cl = p * h, p * l, p * c
             if outcome is None:
+                adverse = max(adverse, min(risk, (entry - lo) if long else (hi - entry)))
                 if long:
                     if lo <= stop:
                         outcome = "stop"        # both inside one bar: count the loss (conservative)
@@ -369,11 +373,16 @@ def simulate(pool, entry, stop, target, k, last, replays=10000, seed=19, window=
                         outcome = "stop"
                     elif lo <= target:
                         outcome = "target"
+                if outcome:
+                    hit_steps.append((outcome, step))
             p = cl
+            sum_r[step] += (r_target if outcome == "target" else -1.0 if outcome == "stop" else
+                            ((p - entry) if long else (entry - p)) / risk)
             if keep:
                 path.append(round(p, 2))
         outcomes.append(outcome or "close")
         closes.append(p)
+        maes.append(adverse / risk)
         if keep:
             paths.append(path)
     cnt = {x: outcomes.count(x) for x in ("target", "stop", "close")}
@@ -411,7 +420,13 @@ def simulate(pool, entry, stop, target, k, last, replays=10000, seed=19, window=
         "p_neither": round(cnt["close"] / replays, 4), "p_green": round(green / replays, 4),
         "median_close": round(pct(srt, 0.5), 2), "p5_close": round(pct(srt, 0.05), 2),
         "p95_close": round(pct(srt, 0.95), 2), "avg_R": round(statistics.mean(Rs), 3),
-        "r_at_target": r_target, "band_paths": BAND_PATHS, "bands": bands, "sample_paths": paths,
+        "r_at_target": r_target,
+        "mae_R": {"median": round(pct(sorted(maes), 0.5), 3), "p95": round(pct(sorted(maes), 0.95), 3),
+                  "mean": round(statistics.mean(maes), 3)},
+        "avg_R_by_bar": [round(x / replays, 4) for x in sum_r],
+        "target_bars": {"median": (sorted(s for o, s in hit_steps if o == "target")[
+            len([1 for o, _ in hit_steps if o == "target"]) // 2] + 1) if any(o == "target" for o, _ in hit_steps) else None},
+        "band_paths": BAND_PATHS, "bands": bands, "sample_paths": paths,
         "hist": {"lo": round(lo_, 2), "hi": round(hi_, 2), "bins": bins},
     }
 
@@ -783,6 +798,11 @@ def time_machine(text, plan, now_utc, replays=10000, seed=19, window=2, until=No
     mc = dict(mc, until=clock24(until_min), pool_sessions=len(pool_from), pool_from=pool_from[0][0],
               pool_to=pool_from[-1][0], pool_kind="event days" if pool_note else "own days",
               band_times=[clock24(OPEN_MIN + 5 * (j + 1)) for j in range(k, last + 1)])
+    abr = mc.get("avg_R_by_bar") or []
+    if abr:
+        best = max(range(len(abr)), key=abr.__getitem__)
+        mc["best_exit"] = {"time": mc["band_times"][best + 1], "avg_R": abr[best],
+                           "at_flat": {"time": mc["band_times"][-1], "avg_R": abr[-1]}}
     rule = resolve_rule(plan, entry_day)
     plan_out = {kk: v for kk, v in plan.items() if v is not None}
     if rule:

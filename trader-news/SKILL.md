@@ -14,7 +14,11 @@ description: >-
   the user says "any news on RELIANCE", "what did companies file today",
   "results today", "order wins", "buybacks", "circuit changes", "ASM GSM",
   "F&O inclusion", "investor presentation", "concall transcript", or "monitor
-  the filings".
+  the filings". Also tracks government orders and tenders (govt_orders_tracker.py:
+  letters of award, L1 bids, MSEDCL, railways, power, defence, NHAI; order value
+  against market cap; cancellations, delays, liquidated damages, debarments;
+  EXECUTION LAG WATCH): use when the user says "government orders", "L1",
+  "tender", "order cancelled", "execution delay" or "order ledger".
 argument-hint: "[--tags results,buyback,orders,documents,exchange] [--mine]"
 ---
 
@@ -92,6 +96,48 @@ then says so. Never fill a missing number in: open the PDF.
 
 During the session: `/loop 15m /trader-news`, or a scheduled task before the
 open and after the close.
+
+## Government orders, tenders & execution risk (govt_orders_tracker.py)
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/govt_orders_tracker.py"               # one pass -> trader/orders/
+python3 "${CLAUDE_SKILL_DIR}/govt_orders_tracker.py" --watch 60    # every 60 s in market hours (15 min outside)
+python3 "${CLAUDE_SKILL_DIR}/govt_orders_tracker.py" ledger        # open orders and their flags
+python3 "${CLAUDE_SKILL_DIR}/govt_orders_tracker.py" --only nse,gnews --days 3 --all --dry-run
+```
+
+Sources, each on its own minimum interval so the 60-second loop never hammers
+anyone: NSE and BSE Regulation 30 announcements (60 s); Google News RSS
+searches for L1 bids, letters of award, work orders, MSEDCL, railways, power,
+defence, NHAI, cancellations and debarments (120 s); Economic Times,
+Moneycontrol and LiveMint RSS (120 s); PIB releases (5 min); GeM bid / award
+lists and CPPP debarment lists (30 min, best effort). A page that asks for a
+CAPTCHA or a login is skipped and said, never solved. Change the feed URLs in
+`trader/orders_sources.json`.
+
+For each item, by regex: the kind (award: LoA, L1, work order, contract
+awarded; cancel: cancellation, termination, withdrawal; delay: delay in
+execution, liquidated damages, a guarantee encashed; debar; milestone:
+completion, commissioning, COD), the value in Rs crore (read from the first 3
+pages of the filing's PDF when the text has none; USD at `--usd-inr` 85; an
+"order book of" figure is never the order), the timeline ("within 24
+months", "by March 2028"), the client (MSEDCL / Maharashtra, Railways, Power,
+Defence, Roads / infra, a state government; never the company itself) and
+`value / market cap` (NSE's quote API, or `trader/market_caps.json`
+`{"KEC": 8700}` when NSE refuses your network): HIGH IMPACT at 5 % or more.
+Tax, court and regulator "orders" (a GST demand, an NCLT order) are not
+contracts and are left out. News headlines are matched to listed companies
+through NSE's EQUITY_L.csv names (whole words; generic one-word names never
+count) and `trader/company_aliases.json` (`{"L&T": "LT"}`).
+
+The ledger `trader/history/orders.db` keeps every item and flags, each run:
+`EXECUTION LAG WATCH` (65 % of a stated timeline gone, no milestone filing
+since the award), `ORDER LOSS / CANCELLATION` (a cancellation, termination,
+delay or LD item after an award; matched on the value within 25 % or the
+client, otherwise "symbol only"), and `DEBARMENT`. Output:
+`trader/orders/latest.json` (with the ledger flags under `watch`) and
+`alerts.csv`, which trader-entry, exit, risk, alerts and the brief read
+through india_signals.py. Exit code 0 when something new was found.
 
 ## What it never does
 

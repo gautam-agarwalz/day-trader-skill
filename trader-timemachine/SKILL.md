@@ -175,6 +175,36 @@ Schedule it every 15 minutes in the session with `/loop 15m` running
 `/trader-news`, then `/trader-pelosi`, then `events.py update` and
 `events.py suggest`.
 
+## Universal Time Machine & trade brief (brief.py)
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/brief.py"                 # trader/orderblocks + macro + orders -> trader/brief/
+python3 "${CLAUDE_SKILL_DIR}/brief.py" plan 1 --write  # setup 1 -> trader/plan.json for exit, budget, risk
+```
+
+Every candidate from the order block scanner and the macro engine, long or
+short, intraday or swing, is simulated before it is shown:
+- intraday: `timemachine.time_machine` (10,000 replays of the rest of the
+  session from the stock's own 60 days of 5-minute bars): win rate, target /
+  stop / open at 15:15, average R, R:R, MAE (median and worst 5 %, in R) and
+  the average R for each exit time;
+- swing: `events.swing_paths` (every 3-session window of the stock's own NSE
+  daily history, drawn 10,000 times, with the overnight gaps as they were; a
+  gap through the stop fills at the open): win rate, expectancy after 0.30 %
+  costs, MAE, how trades ended, the average for exiting on day 1, 2 or 3; with
+  `trader/history/events.sqlite`, also other stocks' days after the same event;
+- a long gets both, and the brief names the optimal exit window (intraday by
+  HH:MM, or day 2 / day 3).
+
+The brief: (a) `[EQUITY LONG]` / `[EQUITY SHORT]` setups with their routing tags
+(`[SECONDARY F&O]` only where eligible), the order block zone, the 50 %
+mean-threshold entry, the confirmation entry, stop, targets and the statistics;
+every setup is shown, and one that loses money in the simulation says "no edge in
+the Time Machine". (b) `[CAUTION / DO NOT ENTER]`: macro headwinds, EXECUTION
+LAG WATCH / ORDER LOSS / DEBARMENT, setups blocked by the anti-trap guards, the
+F&O ban, surveillance and results-day flags. `plan N` carries the anti-trap
+windows into the plan, so trader-risk blocks the same order inside them.
+
 ## Steps
 
 1. Make sure `trader/plan.json` is today's plan from `/trader-exit`. If there

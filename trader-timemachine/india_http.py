@@ -182,9 +182,11 @@ def parse_rss(body):
     f = feedparser.parse(body)
     out = []
     for e in f.entries:
+        src = e.get("source") or {}
         out.append({"title": (e.get("title") or "").strip(), "summary": (e.get("summary") or "").strip(),
                     "link": (e.get("link") or "").strip(), "published": (e.get("published") or "").strip(),
-                    "time": parse_when(e.get("published") or e.get("updated") or "")})
+                    "time": parse_when(e.get("published") or e.get("updated") or ""),
+                    "outlet": (src.get("title") or "").strip(), "outlet_url": (src.get("href") or "").strip()})
     return out
 
 
@@ -205,11 +207,15 @@ def parse_when(text):
     m = re.match(r"(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?", t)
     if m:
         return "%s-%s-%s %s:%s" % (m.group(1), m.group(2), m.group(3), m.group(4) or "00", m.group(5) or "00")
-    m = re.match(r"(?:[A-Za-z]{3},\s*)?(\d{1,2}) ([A-Za-z]{3}) (\d{4}) (\d{2}):(\d{2})(?::\d{2})?\s*([+-]\d{4})?", t)
+    m = re.match(r"(?:[A-Za-z]{3},\s*)?(\d{1,2}) ([A-Za-z]{3}) (\d{4}) (\d{2}):(\d{2})(?::\d{2})?\s*([+-]\d{4}|GMT|UTC|UT|Z)?",
+                 t)
     if m and m.group(2).upper() in MONTHS:
         d = _dt.datetime(int(m.group(3)), MONTHS[m.group(2).upper()], int(m.group(1)), int(m.group(4)), int(m.group(5)))
-        if m.group(6) and m.group(6) != "+0530":   # convert other offsets to IST
-            off = int(m.group(6)[:3]) * 60 + int(m.group(6)[0] + m.group(6)[3:])
+        zone = m.group(6)
+        if zone in ("GMT", "UTC", "UT", "Z"):     # most press feeds (Google News too) stamp GMT
+            zone = "+0000"
+        if zone and zone != "+0530":               # convert other offsets to IST
+            off = int(zone[:3]) * 60 + int(zone[0] + zone[3:])
             d = d - _dt.timedelta(minutes=off) + IST
         return d.strftime("%Y-%m-%d %H:%M")
     m = re.match(r"(\d{4})(\d{2})(\d{2})$", t)

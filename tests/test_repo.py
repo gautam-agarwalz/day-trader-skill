@@ -117,13 +117,18 @@ class Repo(unittest.TestCase):
         with open(os.path.join(ROOT, "requirements.txt"), encoding="utf-8") as fh:
             reqs = [ln.split("#")[0].strip() for ln in fh if ln.split("#")[0].strip()]
         self.assertEqual(reqs, ["mcp>=2.3,<3", "requests>=2.31", "feedparser>=6.0", "pypdf>=4.0", "pdfplumber>=0.10",
-                                "pandas>=2.0", "openpyxl>=3.1", "beautifulsoup4>=4.12"])
+                                "pandas>=2.0", "openpyxl>=3.1", "beautifulsoup4>=4.12", "gdeltdoc>=1.5"])
         self.assertFalse(any(r.startswith(("yfinance", "pandas-datareader")) for r in reqs))
 
     def test_one_india_http_layer_shared_by_smart_money_and_catalysts(self):
-        for name, folders in (("india_http.py", ("trader-pelosi", "trader-news", "trader-analyst", "trader-timemachine")),
+        for name, folders in (("india_http.py", ("trader-pelosi", "trader-news", "trader-analyst", "trader-timemachine",
+                                                 "trader-scanner")),
                               ("india_results.py", ("trader-analyst", "trader-news")),
                               ("india_catalysts.py", ("trader-news", "trader-timemachine")),
+                              ("india_market.py", ("trader-news", "trader-scanner", "trader-timemachine")),
+                              ("india_bars.py", ("trader-scanner", "trader-timemachine")),
+                              ("india_signals.py", ("trader-alerts", "trader-entry", "trader-exit", "trader-risk",
+                                                    "trader-scanner", "trader-timemachine")),
                               ("nse_data.py", ("trader-scanner", "trader-alerts", "trader-timemachine"))):
             with open(os.path.join(ROOT, folders[0], name), encoding="utf-8") as fh:
                 ref = fh.read()

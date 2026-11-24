@@ -11,7 +11,12 @@ description: >-
   writes trader/watchlist.json for trader-news and trader-entry. Use when the user says "scan the market", "find me setups",
   "what is breaking out", "opening range breakouts", "scan for bull flags",
   "oversold stocks", "pre-market scan", "build my watchlist", "what should I
-  look at today", or at the start of a trading day before /trader-news.
+  look at today", or at the start of a trading day before /trader-news. Also
+  runs the global macro engine (gold, war, crude, US tariffs / China+1, Fed,
+  metals; 3 legitimacy gates; long / short / caution lists) and the
+  multi-timeframe order block scanner (sweep / absorption confirmation, VWAP,
+  anti-trap time and extension guards): use for "macro", "gold surge",
+  "crude spike", "war stocks", "order blocks", "smart money entry", "FVG".
 argument-hint: "[universe | daily | orb] [--at HH:MM]"
 ---
 
@@ -177,6 +182,66 @@ oversold bounce).
 - Say "matched a rule", never "a buy", "a winner" or "a good trade".
 - Never print a P&L, a return or a profit figure.
 - A hit is stale once the price has moved on. Re-run before acting on it.
+
+## Global macro engine (global_macro_engine.py)
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/global_macro_engine.py"               # -> trader/macro/latest.json
+python3 "${CLAUDE_SKILL_DIR}/global_macro_engine.py" --themes gold,crude --hours 6
+```
+
+Headlines from the GDELT 2.0 DOC API (`gdeltdoc`, or the plain API URL), the
+RSS feeds in `macro_map.json` (ET, Moneycontrol, LiveMint, RBI, the Fed, PIB)
+and a Google News search per theme, plus company events from
+`trader/orders` and `trader/catalysts`. Themes: gold, war / geopolitics,
+crude, US tariffs / China+1, the Fed, global metals; copy `macro_map.json` to
+`trader/macro_map.json` to change keywords, proxies, thresholds and the stock
+lists. The defaults (gold up: long MUTHOOTFIN / MANAPPURAM / TITAN; war or
+crude up: long HAL / BEL / MAZDOCK / ONGC, short INDIGO / ASIANPAINT / BPCL /
+HPCL; the reverse move flips them) are examples, not findings.
+
+The 3 gates, each with its evidence in the output:
+1. Source: a tier-1 domain (exchange, government, central bank) or an
+   exchange filing, OR 2 different outlets on the same theme and direction
+   within 15 minutes.
+2. Size: a proxy past its threshold the expected way (gold GC=F 1.5 %, crude
+   CL=F 3 %, copper HG=F 2.5 % ...), or an order >= 5 % of market cap, or
+   profit / revenue >= 20 % on last year.
+3. Market: 5 to 15 minutes after the news, a 5-minute bar with >= 2.0x the
+   20-bar average volume, price moving the expected way. Pending before 5
+   minutes, dropped after 15; news outside hours starts at the next 9:15.
+   Volume is not proof that an institution traded.
+
+Lists: `[ACTIONABLE LONG]`, `[ACTIONABLE SHORT]`, `[CAUTION / BLOCK ENTRY]`.
+Routing is equity first: `[EQUITY INTRADAY LONG]` or `[EQUITY SWING LONG: 2-3+
+DAYS]`; every cash short is `[EQUITY INTRADAY SHORT - AUTO SQUARE-OFF 3:15
+PM]` (SEBI: cash shorts are squared off the same day), and `[SECONDARY F&O
+SWING SHORT OPTION]` is added only for an F&O stock out of the ban period in a
+multi-day downtrend.
+
+## Order block scanner (order_block_scanner.py)
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/order_block_scanner.py"                        # symbols from orders, macro, watchlist
+python3 "${CLAUDE_SKILL_DIR}/order_block_scanner.py" --symbols KEC,HAL --tf 5m,15m,60m,1d --all
+```
+
+An order block is the last opposite-coloured candle before an impulse of 2x
+ATR(14) or more, within 3 candles, that closes beyond the last swing high /
+low (break of structure) and leaves a 3-candle fair value gap. Zone = that
+candle's range, 50 % mean threshold, unmitigated until first revisited. On
+5-min, 15-min (resampled) and 1-hour bars from Yahoo, daily from NSE. An entry
+needs, on the first revisit: a liquidity sweep and reclaim (a wick beyond the
+zone or the swing level closing back inside, volume >= 1.8x) OR an absorption
+candle (volume >= 1.8x, narrow body or long wick, close inside the zone in the
+top / bottom 30 %); the close on the right side of the session VWAP (intraday)
+or the VWAP anchored on the event date (swing); F&O open interest from NSE's
+daily F&O bhavcopy as a note only. Anti-trap guards: no intraday entries
+09:15-09:30 or 11:45-13:30 or after 14:50, none when the price is more than
+1.5x the 14-day ATR from the previous close (intraday) or the anchored VWAP
+(swing). Writes `trader/orderblocks/latest.json` with the zone, the 50 %
+entry, the stop beyond the far edge, targets and the guards; the brief in
+trader-timemachine simulates every setup.
 
 ## What it never does
 

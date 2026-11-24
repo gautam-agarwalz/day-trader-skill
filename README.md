@@ -126,7 +126,12 @@ python3 trader-scanner/scan.py daily                                   # pre-mar
 python3 trader-scanner/scan.py orb --at 10:00                          # opening-range breakouts so far
 python3 trader-news/news.py --days 1                                   # filings, circulars, catalysts
 python3 trader-news/news.py --mine --tags results,buyback              # only your symbols
+python3 trader-news/govt_orders_tracker.py --watch 60                  # govt orders, value vs market cap, lag / loss flags
 python3 trader-pelosi/smartmoney.py                                    # deals, insiders, SAST, pledges, flows
+python3 trader-scanner/global_macro_engine.py                          # gold, war, crude, tariffs, Fed, metals: 3 gates
+python3 trader-scanner/order_block_scanner.py                          # order blocks, sweep / absorption, anti-trap guards
+python3 trader-timemachine/brief.py                                    # every setup through the Time Machine -> the brief
+python3 trader-timemachine/brief.py plan 1 --write                     # setup 1 -> trader/plan.json
 python3 trader-analyst/facts.py TCS INFY                               # quarters, growth, EPS, next results
 python3 trader-entry/entry.py check RELIANCE --setup orb               # waiting / triggered / expired
 python3 trader-entry/entry.py watch RELIANCE --every 30                # bar by bar until it triggers
@@ -186,6 +191,16 @@ Overnight (swing) holds are off until you turn them on in `trader/config.json`
 (`"swing": {"allow_overnight": true}`); then the exit planner, budget, risk
 and alerts handle an exit-by date and size on the gap risk.
 
+**The engine's maps and gates are rules, not insight.** The macro theme map
+(gold, war, crude, tariffs, the Fed, metals -> NSE stocks) holds editable
+defaults, not findings. Gate 3 is volume: 2x volume is not proof that an
+institution traded. Order values, timelines and clients are read by regex from
+filings and headlines; a value is only known when the filing states it, and
+news is matched to companies by name. GeM and CPPP pages are skipped whenever
+they show a CAPTCHA or a login. Intraday odds rest on about 60 sessions of
+5-minute bars per stock. Every setup is shown with its Time Machine numbers,
+and one that loses money in the simulation says so.
+
 **A stop is a plan, not a guarantee.** In a fast market, across a gap or at a
 circuit, a stop order can fill well past its price or not at all. The max loss
 shown is the loss at the stop price.
@@ -205,11 +220,14 @@ Nothing here is tax advice.
 ## Files
 
 ```
-trader-scanner/     SKILL.md, scan.py, nse_data.py, india_signals.py
-trader-news/        SKILL.md, news.py, india_http.py, india_results.py, india_catalysts.py
+trader-scanner/     SKILL.md, scan.py, global_macro_engine.py, order_block_scanner.py, macro_map.json,
+                    nse_data.py, india_signals.py, india_http.py, india_market.py, india_bars.py
+trader-news/        SKILL.md, news.py, govt_orders_tracker.py, india_http.py, india_results.py,
+                    india_catalysts.py, india_market.py
 trader-entry/       SKILL.md, entry.py, india_signals.py
 trader-exit/        SKILL.md, exit.py, india_signals.py
-trader-timemachine/ SKILL.md, timemachine.py, events.py, india_signals.py, india_catalysts.py, india_http.py, nse_data.py
+trader-timemachine/ SKILL.md, timemachine.py, events.py, brief.py, india_signals.py, india_catalysts.py,
+                    india_http.py, nse_data.py, india_market.py, india_bars.py
 trader-risk/        SKILL.md, check.py, india_signals.py
 trader-budget/      SKILL.md, size.py, config.example.json, targets.example.json
 trader-broker/      SKILL.md, ticket.py, claude_desktop_config.example.json
@@ -221,7 +239,7 @@ requirements.txt    Python packages (Python 3.10+)
 ```
 
 The shared modules (`nse_data.py`, `india_http.py`, `india_results.py`,
-`india_signals.py`, `india_catalysts.py`) are copied into each folder that uses them so every skill
+`india_signals.py`, `india_catalysts.py`, `india_market.py`, `india_bars.py`) are copied into each folder that uses them so every skill
 works on its own; the tests keep the copies identical.
 
 MIT. Made by [Jake Schincariol](https://opusjake.ai).

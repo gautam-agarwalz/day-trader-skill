@@ -1,0 +1,105 @@
+{
+  "_about": "Theme -> NSE stock matrix for global_macro_engine.py. Editable defaults, not findings: the brief shows the Time Machine numbers for every mapped stock, so a weak mapping shows up as no edge. Copy this file to trader/macro_map.json to change it. up / down = the direction of the shock (gold up, crude down, war escalating, a ceasefire...).",
+  "window_minutes": 15,
+  "gate3": {"min_wait_minutes": 5, "max_wait_minutes": 15, "volume_ratio": 2.0, "bars": 20},
+  "tier1_domains": ["nseindia.com", "nseindia.in", "bseindia.com", "sebi.gov.in", "rbi.org.in", "pib.gov.in",
+                    "federalreserve.gov", "treasury.gov", "ustr.gov", "whitehouse.gov", "federalregister.gov",
+                    "commerce.gov.in", "mea.gov.in", "mod.gov.in", "finmin.nic.in", "opec.org", "iea.org",
+                    "ecb.europa.eu", "bankofengland.co.uk", "boj.or.jp", "pbc.gov.cn"],
+  "feeds": [
+    "https://economictimes.indiatimes.com/markets/commodities/rssfeeds/1808152121.cms",
+    "https://economictimes.indiatimes.com/news/economy/rssfeeds/1373380680.cms",
+    "https://www.moneycontrol.com/rss/economy.xml",
+    "https://www.moneycontrol.com/rss/internationalmarkets.xml",
+    "https://www.livemint.com/rss/economy",
+    "https://www.livemint.com/rss/markets",
+    "https://www.rbi.org.in/pressreleases_rss.xml",
+    "https://www.federalreserve.gov/feeds/press_all.xml",
+    "https://pib.gov.in/RssMain.aspx?ModId=6&Lang=1&Regid=3"
+  ],
+  "themes": {
+    "gold": {
+      "label": "Gold / bullion",
+      "keywords": ["gold", "bullion", "gold price", "gold prices", "MCX gold", "COMEX gold"],
+      "gdelt": "(gold OR bullion) (price OR prices OR rally OR record)",
+      "up_words": ["surge", "surges", "soar", "soars", "record", "rally", "rallies", "jump", "jumps", "rise", "rises",
+                   "climb", "climbs", "all-time high", "fresh high", "spikes"],
+      "down_words": ["fall", "falls", "slump", "slumps", "drop", "drops", "plunge", "plunges", "tumble", "tumbles",
+                     "slide", "slides", "crash", "sell-off", "retreat"],
+      "proxies": [{"symbol": "GC=F", "threshold_pct": 1.5, "sign": 1}],
+      "persistent": true,
+      "up": {"long": ["MUTHOOTFIN", "MANAPPURAM", "TITAN"], "short": [], "caution": ["SENCO", "KALYANKJIL"]},
+      "down": {"long": [], "short": ["MUTHOOTFIN", "MANAPPURAM"], "caution": ["TITAN"]}
+    },
+    "war": {
+      "label": "War / geopolitical escalation",
+      "keywords": ["war", "military", "missile", "airstrike", "air strike", "invasion", "attack", "border clash",
+                   "ceasefire", "truce", "geopolitical", "conflict", "drone strike", "strait of hormuz", "red sea"],
+      "gdelt": "(war OR missile OR airstrike OR invasion OR ceasefire OR \"military escalation\")",
+      "up_words": ["escalat", "attack", "strike", "strikes", "missile", "invasion", "invades", "war ", "retaliat",
+                   "mobilis", "mobiliz", "shelling", "blockade", "clash"],
+      "down_words": ["ceasefire", "truce", "peace deal", "peace talks", "de-escalat", "withdraw", "accord", "armistice"],
+      "proxies": [{"symbol": "CL=F", "threshold_pct": 3.0, "sign": 1}, {"symbol": "^VIX", "threshold_pct": 15.0, "sign": 1}],
+      "persistent": true,
+      "up": {"long": ["HAL", "BEL", "MAZDOCK", "BDL", "COCHINSHIP", "ONGC"],
+             "short": ["INDIGO", "ASIANPAINT", "BPCL", "HPCL"], "caution": ["IOC", "BERGEPAINT", "PIDILITIND"]},
+      "down": {"long": ["INDIGO", "ASIANPAINT", "BPCL", "HPCL"], "short": [], "caution": ["HAL", "BEL", "MAZDOCK", "BDL"]}
+    },
+    "crude": {
+      "label": "Crude oil shock",
+      "keywords": ["crude", "oil price", "oil prices", "brent", "wti", "opec", "opec+"],
+      "gdelt": "(crude OR brent OR \"oil prices\" OR OPEC)",
+      "up_words": ["surge", "surges", "soar", "soars", "spike", "spikes", "jump", "jumps", "rally", "rallies", "cut output",
+                   "production cut", "supply cut", "rise", "rises", "highest"],
+      "down_words": ["fall", "falls", "slump", "slumps", "plunge", "plunges", "tumble", "tumbles", "drop", "drops",
+                     "output hike", "raise output", "glut", "lowest"],
+      "proxies": [{"symbol": "CL=F", "threshold_pct": 3.0, "sign": 1}, {"symbol": "BZ=F", "threshold_pct": 3.0, "sign": 1}],
+      "persistent": true,
+      "up": {"long": ["ONGC", "OIL"], "short": ["INDIGO", "ASIANPAINT", "BPCL", "HPCL"],
+             "caution": ["IOC", "BERGEPAINT", "PIDILITIND", "APOLLOTYRE"]},
+      "down": {"long": ["INDIGO", "ASIANPAINT", "BPCL", "HPCL", "IOC"], "short": [], "caution": ["ONGC", "OIL"]}
+    },
+    "us_tariffs": {
+      "label": "US tariffs / China+1",
+      "keywords": ["tariff", "tariffs", "trade war", "china+1", "china plus one", "import duty", "section 301",
+                   "reciprocal tariff"],
+      "gdelt": "(tariff OR tariffs OR \"trade war\") (china OR india)",
+      "up_words": ["imposes", "hike", "hikes", "raises", "new tariffs", "slaps", "levies", "escalat", "retaliat"],
+      "down_words": ["cut", "cuts", "rollback", "exempt", "exemption", "pause", "trade deal", "truce", "eases", "lowers"],
+      "proxies": [{"symbol": "^NSEI", "threshold_pct": 1.0, "sign": -1}, {"symbol": "CNH=X", "threshold_pct": 0.5, "sign": 1}],
+      "persistent": true,
+      "up": {"long": ["DIXON", "KAYNES", "AMBER", "SYRMA"], "short": [],
+             "caution": ["WELSPUNLIV", "KPRMILL", "GOKEX", "INFY", "TCS"]},
+      "down": {"long": ["WELSPUNLIV", "KPRMILL"], "short": [], "caution": ["DIXON", "KAYNES"]}
+    },
+    "fed": {
+      "label": "US Fed rate decision",
+      "keywords": ["federal reserve", "fed ", "fomc", "powell", "rate cut", "rate hike", "interest rates"],
+      "gdelt": "(\"federal reserve\" OR FOMC) (rate OR rates)",
+      "up_words": ["hike", "hikes", "raises rates", "hawkish", "tightening", "higher for longer"],
+      "down_words": ["cut", "cuts", "lowers rates", "dovish", "easing", "pivot"],
+      "proxies": [{"symbol": "^TNX", "threshold_pct": 2.0, "sign": 1}, {"symbol": "DX-Y.NYB", "threshold_pct": 0.6, "sign": 1}],
+      "persistent": false,
+      "up": {"long": [], "short": [], "caution": ["HDFCBANK", "BAJFINANCE", "DLF", "GODREJPROP", "INFY"]},
+      "down": {"long": ["HDFCBANK", "BAJFINANCE", "DLF", "GODREJPROP"], "short": [], "caution": []}
+    },
+    "metals": {
+      "label": "Global metals",
+      "keywords": ["copper", "aluminium", "aluminum", "steel prices", "iron ore", "zinc", "base metals", "LME"],
+      "gdelt": "(copper OR aluminium OR aluminum OR \"iron ore\" OR \"steel prices\" OR LME)",
+      "up_words": ["surge", "surges", "soar", "soars", "rally", "rallies", "jump", "jumps", "record", "rise", "rises",
+                   "supply cut", "shortage"],
+      "down_words": ["fall", "falls", "slump", "slumps", "plunge", "plunges", "tumble", "tumbles", "drop", "drops",
+                     "glut", "oversupply"],
+      "proxies": [{"symbol": "HG=F", "threshold_pct": 2.5, "sign": 1}, {"symbol": "ALI=F", "threshold_pct": 2.5, "sign": 1}],
+      "persistent": true,
+      "up": {"long": ["HINDALCO", "VEDL", "NATIONALUM", "HINDCOPPER", "TATASTEEL", "JSWSTEEL"], "short": [],
+             "caution": ["POLYCAB", "HAVELLS"]},
+      "down": {"long": [], "short": ["HINDALCO", "VEDL", "NATIONALUM", "HINDCOPPER"], "caution": ["TATASTEEL", "JSWSTEEL"]}
+    }
+  },
+  "company_events": {
+    "order_impact_pct": 5.0,
+    "results_yoy_pct": 20.0
+  }
+}

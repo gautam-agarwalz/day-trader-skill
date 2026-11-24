@@ -6,6 +6,8 @@ Standard library only, no network, no language model. It reads the files those t
   trader/catalysts/alerts.csv       every catalyst news.py has flagged (history across runs)
   trader/smart_money/latest.json    the last smartmoney.py run
   trader/smart_money/alerts.csv     every smart-money item flagged (history across runs)
+  trader/orders/latest.json         the last govt_orders_tracker.py run (orders, cancellations, lag)
+  trader/orders/alerts.csv          every order item it has flagged
 When a file is missing the answer is simply empty; run /trader-news and /trader-pelosi to fill them.
 
 The same copy lives in every tool folder that uses it (a repo test keeps them identical).
@@ -78,7 +80,7 @@ def _norm(row, kind):
 def load_all(base=BASE):
     """Every catalyst and smart-money item on disk, one per id."""
     out = {}
-    for kind, folder in (("catalyst", "catalysts"), ("smart_money", "smart_money")):
+    for kind, folder in (("catalyst", "catalysts"), ("smart_money", "smart_money"), ("catalyst", "orders")):
         rows = _read_csv(os.path.join(base, folder, "alerts.csv")) + _read_json_items(os.path.join(base, folder, "latest.json"))
         for r in rows:
             it = _norm(r, kind)
@@ -147,6 +149,12 @@ def risk_flags(signals, now=None):
             add("auditor resigned", c["title"], c["link"])
         if "buyback" in c["tags"] and re.search(r"ex[- ]date", text, re.I):
             add("ex-date", "%s: the price adjusts on the ex-date" % c["title"], c["link"])
+        if "ORDER LOSS / CANCELLATION" in c["flags"]:
+            add("order loss / cancellation", c["title"], c["link"])
+        if "EXECUTION LAG WATCH" in c["flags"]:
+            add("execution lag watch", c["title"], c["link"])
+        if "DEBARMENT" in c["flags"]:
+            add("debarment", c["title"], c["link"])
     for s in signals.get("smart_money", []):
         flags = " ".join(s["flags"]).lower()
         text = "%s %s" % (s["title"], s["detail"])

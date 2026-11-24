@@ -627,6 +627,84 @@ def simulate(days, entry, stop, target, side=1, entry_at_open=False, exit_at_ope
     return side * (c / entry - 1), "time"
 
 
+# ---------------------------------------------------------------- universal swing replay (brief.py)
+
+def windows_from_bars(bars, days=3):
+    """Every `days`-session forward path in a stock's own daily history, relative to the close it starts
+    from: [[(o, h, l, c) / that close, ...]]. bars = [{"o", "h", "l", "c"}] oldest first (one per session),
+    or the (o, h, l, c, prev_close, ...) tuples load_bars gives."""
+    rows = [(b["o"], b["h"], b["l"], b["c"]) if isinstance(b, dict) else tuple(b[:4]) for b in bars]
+    out = []
+    for t in range(len(rows) - days):
+        base = rows[t][3]
+        if not base:
+            continue
+        out.append([(o / base, h / base, lo / base, c / base) for o, h, lo, c in rows[t + 1:t + 1 + days]])
+    return out
+
+
+def windows_from_events(events, days=3):
+    """Day-0 forward paths of past events (collect / study): already relative to the day-0 close."""
+    return [e["path"][:days] for e in events if len(e.get("path") or []) >= days]
+
+
+def swing_paths(windows, entry, stop, target, side=1, days=3, sims=SIMS, seed=SEED, cost=COST):
+    """Thousands of forward paths for a 1-to-`days`-session hold entered at a close: each draw is one real
+    past window (a block of consecutive sessions, so overnight gaps and follow-through stay as they were),
+    replayed with simulate() (a gap through the stop fills at the open). -> win rate, expectancy in R and
+    %, MAE, how trades ended, the average for each exit day, the best exit day, the 5-95 % range."""
+    import random
+    windows = [w for w in windows if len(w) >= days]
+    if not windows or not entry or not stop:
+        return None
+    sf = abs(entry - stop) / entry
+    tf = abs(target - entry) / entry if target else None
+    rnd = random.Random(seed)
+
+    def one(w):
+        by = {}
+        for d in range(1, days + 1):
+            r, how = simulate(w[:d], 1.0, sf, tf, side)
+            by[d] = (r * 100 - cost, how)
+        adverse = 0.0
+        for o, h, lo, c in w:
+            gap = (o <= 1 - sf) if side > 0 else (o >= 1 + sf)
+            if gap:                                    # opened through the stop: the open is the loss
+                adverse = max(adverse, (1 - o) if side > 0 else (o - 1))
+                break
+            hit = (lo <= 1 - sf) if side > 0 else (h >= 1 + sf)
+            if hit:
+                adverse = max(adverse, sf)
+                break
+            adverse = max(adverse, (1 - lo) if side > 0 else (h - 1))
+            if tf and ((h >= 1 + tf) if side > 0 else (lo <= 1 - tf)):
+                break
+        return by, adverse / sf
+
+    real = [one(w) for w in windows]                   # each past window once: the honest sample
+    picks = [rnd.randrange(len(real)) for _ in range(sims)]
+    final = [real[i][0][days][0] for i in picks]
+    hows = {}
+    for i in picks:
+        h = real[i][0][days][1]
+        hows[h] = hows.get(h, 0) + 1
+    maes = sorted(real[i][1] for i in picks)
+    avg = {d: round(sum(real[i][0][d][0] for i in picks) / sims, 3) for d in range(1, days + 1)}
+    best = max(avg, key=avg.get)
+    mean = sum(final) / sims
+    srt = sorted(final)
+    return {"windows": len(windows), "sims": sims, "days": days,
+            "win_pct": round(sum(1 for x in final if x > 0) / sims * 100, 1),
+            "mean_net_pct": round(mean, 3), "expectancy_R": round(mean / (sf * 100), 3),
+            "p5_pct": round(_pct(srt, 0.05), 3), "p95_pct": round(_pct(srt, 0.95), 3),
+            "mae_R": {"median": round(_pct(maes, 0.5), 3), "p95": round(_pct(maes, 0.95), 3)},
+            "outcomes": {k: round(v / sims * 100, 1) for k, v in sorted(hows.items())},
+            "gap_through_stop_pct": round(hows.get("stop gap", 0) / sims * 100, 1),
+            "avg_net_by_day": avg, "best_exit_day": best, "cost_pct": cost,
+            "rr": round(tf / sf, 2) if tf else None,
+            "bootstrap": bootstrap([r[0][days][0] for r in real], sims, seed)}
+
+
 def entries_for(session):
     """Which entries a trader could really take for an event in this session."""
     return ("close0", "open1") if session == "during" else ("open0", "close0", "open1")
