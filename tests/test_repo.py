@@ -130,6 +130,7 @@ class Repo(unittest.TestCase):
                               ("india_calendar.py", ("trader-scanner", "trader-entry", "trader-exit", "trader-risk",
                                                      "trader-alerts", "trader-timemachine", "trader-news")),
                               ("india_costs.py", ("trader-timemachine", "trader-budget")),
+                              ("angel_one.py", ("trader-scanner", "trader-alerts", "trader-timemachine")),
                               ("india_signals.py", ("trader-alerts", "trader-entry", "trader-exit", "trader-risk",
                                                     "trader-scanner", "trader-timemachine")),
                               ("nse_data.py", ("trader-scanner", "trader-alerts", "trader-timemachine"))):
@@ -176,7 +177,20 @@ class Repo(unittest.TestCase):
             b = fh.read()
         self.assertEqual(a, b, "copy trader-scanner/nse_data.py over trader-alerts/nse_data.py")
         self.assertIn("def fetch_backup_data(", a)
-        self.assertIn("# TODO: Plug in Angel One SmartAPI or TradingView backup here", a)
+        self.assertIn("_angel_one(syms, kind)", a, "the backup hook tries Angel One SmartAPI first")
+
+    def test_angel_one_is_data_only(self):
+        """Angel One SmartAPI is wired in as a DATA source. No tool may place, modify or cancel an order
+        through it: orders stay manual, through trader-broker and the user's yes."""
+        for s in SKILLS:
+            path = os.path.join(ROOT, s, "angel_one.py")
+            if not os.path.exists(path):
+                continue
+            with open(path, encoding="utf-8") as fh:
+                src = fh.read()
+            for bad in ("placeOrder", "modifyOrder", "cancelOrder", "/order/", "order/v1", "gtt"):
+                self.assertNotIn(bad, src, "%s/angel_one.py" % s)
+            self.assertNotIn("ANGEL_PIN\" =", src)
 
     def test_no_yfinance_or_stooq(self):
         for s in SKILLS:

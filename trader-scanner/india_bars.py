@@ -66,10 +66,33 @@ def _get(url, timeout=20):
         return r.read().decode("utf-8", "replace")
 
 
+LAST_SOURCE = {}       # symbol -> where its last chart came from ("angelone" / "yahoo" / "offline")
+
+
 def fetch_text(sym, interval="5m", rng=None, offline=None, record=None, pause=PAUSE):
-    """The chart JSON text. offline=DIR reads DIR/<SYM.NS>_<interval>.json(.gz) (or the time machine's
-    <SYM>-60d5m.json(.gz) for 5m); record=DIR saves what the network answered."""
+    """The chart JSON text. For NSE stocks Angel One SmartAPI comes first when its ANGEL_* environment
+    variables are set (about 90 days of 5-minute bars, against Yahoo's 60); Yahoo is the fallback and the
+    only source for global proxies (GC=F, ^VIX). TRADER_INTRADAY=yahoo / angel forces one.
+    offline=DIR reads DIR/<SYM.NS>_<interval>.json(.gz) (or the time machine's <SYM>-60d5m.json(.gz) for 5m);
+    record=DIR saves what the network answered."""
+    if not offline and is_nse(sym) and interval in ("5m", "15m", "60m", "1d"):
+        try:
+            import angel_one
+        except ImportError:
+            angel_one = None
+        prov = angel_one.provider() if angel_one else "yahoo"
+        if angel_one and prov != "yahoo" and (angel_one.configured() or prov == "angel"):
+            try:
+                base = yahoo_symbol(sym)[:-3]
+                text = angel_one.Angel(record=record).chart_json(base, interval)
+                LAST_SOURCE[sym] = "angelone"
+                return text
+            except angel_one.AngelError as e:
+                if prov == "angel":
+                    raise BarsError("Angel One: %s" % e)
+                LAST_SOURCE[sym] = "yahoo (Angel One failed: %s)" % str(e)[:80]
     if offline:
+        LAST_SOURCE[sym] = "offline"
         names = [offline_name(sym, interval)]
         if interval == "5m":
             base = yahoo_symbol(sym)[:-3] if is_nse(sym) else sym
@@ -88,6 +111,7 @@ def fetch_text(sym, interval="5m", rng=None, offline=None, record=None, pause=PA
             time.sleep(pause)
             try:
                 text = _get(chart_url(sym, interval, rng, host))
+                LAST_SOURCE.setdefault(sym, "yahoo")
                 if record:
                     os.makedirs(record, exist_ok=True)
                     with open(os.path.join(record, offline_name(sym, interval)), "w", encoding="utf-8") as fh:

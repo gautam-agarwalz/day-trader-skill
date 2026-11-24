@@ -227,6 +227,24 @@ def fetch_chart(sym):
     raise TMError("Yahoo answered HTTP %s for %s on both hosts. Try again later." % (last, sym.upper()))
 
 
+def angel_chart(sym):
+    """(chart JSON, "angelone") from Angel One SmartAPI when its ANGEL_* variables are set (90 days of
+    5-minute bars), else (None, why). Yahoo stays the fallback."""
+    try:
+        import angel_one
+    except ImportError:
+        return None, "angel_one.py missing"
+    prov = angel_one.provider()
+    if prov == "yahoo" or not (angel_one.configured() or prov == "angel"):
+        return None, "not configured"
+    try:
+        return angel_one.Angel().chart_json(nse_base(sym), "5m"), "angelone"
+    except angel_one.AngelError as e:
+        if prov == "angel":
+            raise TMError("Angel One: %s" % e)
+        return None, str(e)
+
+
 def read_offline(path, sym):
     """A saved Yahoo chart file (.json or .json.gz), or a folder holding <SYM>-60d5m.json(.gz)."""
     if os.path.isdir(path):
@@ -919,7 +937,9 @@ def time_machine(text, plan, now_utc, replays=10000, seed=19, window=2, until=No
         "created_by": "trader-timemachine",
         "created_at": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "source": source,
-        "data": {"symbol": msym or sym, "interval": "5m", "range": "60d",
+        "data": {"symbol": msym or sym, "interval": "5m",
+                 "range": "%s to %s (%d sessions)" % (min(days), max(days), len(days)),
+                 "provider": meta.get("source") or source,
                  "last_bar": "%s %s IST" % (last_bar["date"], last_bar["start"]),
                  "dropped": dropped, "short_sessions_left_out": short},
         "plan": plan_out,
@@ -1062,7 +1082,9 @@ def compute(a):
     if a.offline:
         text, source = read_offline(a.offline, plan["symbol"]), "offline"
     else:
-        text, source = fetch_chart(plan["symbol"]), "yahoo"
+        text, source = angel_chart(plan["symbol"])
+        if text is None:
+            text, source = fetch_chart(plan["symbol"]), "yahoo"
     ev_sessions = ev_info = None
     if getattr(a, "event_pool", None):
         etype = a.event_pool

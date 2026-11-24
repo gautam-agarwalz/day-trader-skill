@@ -350,11 +350,15 @@ def fetch_backup_data(symbols, kind="quotes", cache_dir=None, reasons=None):
     syms = [nse_symbol(s) for s in symbols]
     data, errors = {}, {}
 
-    # TODO: Plug in Angel One SmartAPI or TradingView backup here.
-    #   Try the live provider first for `syms`, put what it returns into `data` (same shapes as
-    #   above, with "source": "angelone" / "tradingview"), and leave the rest to the cache below.
-    #   e.g. data.update(_angel_one_quotes(syms) if kind == "quotes" else _angel_one_daily(syms))
-    #   Keep credentials out of this file (environment variables or trader/config.json).
+    # Angel One SmartAPI (angel_one.py) when its four ANGEL_* environment variables are set; the local CSV
+    # cache below catches whatever is left. A TradingView or other provider would slot in the same way.
+    if kind in ("quotes", "daily"):
+        got, why = _angel_one(syms, kind)
+        data.update(got)
+        if why:
+            for s in syms:
+                if s not in data:
+                    reasons = dict(reasons or {}, **{s: _why(s, reasons, "Angel One: %s" % why)})
 
     remaining = [s for s in syms if s not in data]
     if kind == "quotes":
@@ -384,6 +388,45 @@ def fetch_backup_data(symbols, kind="quotes", cache_dir=None, reasons=None):
     else:
         raise NSEError("fetch_backup_data: kind is quotes or daily, not %r" % kind)
     return data, errors
+
+
+def _angel_one(syms, kind):
+    """(data, why it failed or None) from Angel One SmartAPI, or ({}, None) when it is not configured."""
+    try:
+        import angel_one
+    except ImportError:
+        return {}, None
+    if not angel_one.configured() or angel_one.provider() == "yahoo":
+        return {}, None
+    out = {}
+    try:
+        api = angel_one.Angel()
+        if kind == "quotes":
+            for s, q in api.quotes(syms).items():
+                q.update(currency="INR", series="EQ", time=_angel_time(q.get("time")))
+                out[s] = q
+        else:
+            for s in syms:
+                try:
+                    rows = api.candles(s, "1d", days=400)
+                except angel_one.AngelError:
+                    continue
+                series = rows_to_series([{"date": r[0][:10], "open": r[1], "high": r[2], "low": r[3], "close": r[4],
+                                          "volume": r[5]} for r in rows], s)
+                series["meta"]["source"] = "angelone"
+                out[s] = series
+    except angel_one.AngelError as e:
+        return out, str(e)[:120]
+    return out, None
+
+
+def _angel_time(text):
+    """Angel One's '21-Jun-2026 10:46:10' (India time) -> ISO UTC like the NSE quotes."""
+    try:
+        local = datetime.datetime.strptime(str(text), "%d-%b-%Y %H:%M:%S")
+    except ValueError:
+        return ""
+    return _iso(local - IST)
 
 
 def _why(sym, reasons, own):

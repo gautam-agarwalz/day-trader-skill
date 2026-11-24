@@ -196,6 +196,15 @@ cash flows. Score +2 or more is risk-on, -2 or less risk-off, otherwise neutral;
 percentile or more says halve the size. The brief shows it on every setup that fights it. A description
 of today, never a block and never a forecast.
 
+## Angel One SmartAPI (optional, angel_one.py)
+
+With `ANGEL_API_KEY`, `ANGEL_CLIENT_CODE`, `ANGEL_PIN` and `ANGEL_TOTP_SECRET` set in the environment,
+the order block scanner, the macro engine's gate 3 and the Time Machine take NSE 5-minute, hourly and daily
+candles from Angel One SmartAPI (about 90 days of 5-minute history) and fall back to Yahoo; NSE's MCP
+servers fall back to it for quotes and daily bars before the local cache. `TRADER_INTRADAY=yahoo` turns it
+off, `angel` makes it the only source. Data only: the module has no order functions. The opening-range
+scan (`scan.py orb`) keeps Yahoo's batch spark quotes for the whole universe.
+
 ## Global macro engine (global_macro_engine.py)
 
 ```bash

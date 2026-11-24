@@ -118,6 +118,24 @@ An example, a day like 23 November 2026 (real NSE data):
 The skills' SKILL.md files also keep the original reel, a Tesla trade on
 Monday 19 October 2026 in New York, as a worked example of each step.
 
+## Optional: Angel One SmartAPI for intraday data
+
+Yahoo's free 5-minute history is about 60 days and can lag. If you have an Angel One account, the tools
+use SmartAPI instead (about 90 days of 5-minute bars, hourly and daily candles, live quotes with open
+interest) and fall back to Yahoo when it fails. Data only: nothing here can place an order through it.
+
+1. Create an app at smartapi.angelone.in (My Apps) and note the API key.
+2. Enable TOTP on your Angel One account and keep the secret (the base32 text behind the QR code).
+3. Set four environment variables where you run the tools (never in a file in this repo):
+
+```bash
+export ANGEL_API_KEY="..."  ANGEL_CLIENT_CODE="..."  ANGEL_PIN="...."  ANGEL_TOTP_SECRET="..."
+export TRADER_INTRADAY=auto      # auto (default): Angel One when set, else Yahoo; angel or yahoo to force one
+```
+
+The day's session token is cached in `trader/cache/angel_session.json` (readable only by you). Order
+placement stays manual, through `/trader-broker` and your yes.
+
 ## The tools
 
 ```bash
@@ -239,7 +257,7 @@ Nothing here is tax advice.
 ## Files
 
 ```
-trader-scanner/     SKILL.md, scan.py, regime.py, global_macro_engine.py, order_block_scanner.py, macro_map.json,
+trader-scanner/     SKILL.md, scan.py, regime.py, global_macro_engine.py, order_block_scanner.py, macro_map.json, angel_one.py,
                     nse_data.py, india_signals.py, india_http.py, india_market.py, india_bars.py
 trader-news/        SKILL.md, news.py, govt_orders_tracker.py, india_http.py, india_results.py,
                     india_catalysts.py, india_market.py
@@ -250,7 +268,7 @@ trader-timemachine/ SKILL.md, timemachine.py, events.py, brief.py, funnel.py, in
 trader-risk/        SKILL.md, check.py, india_signals.py, india_calendar.py
 trader-budget/      SKILL.md, size.py, india_costs.py, config.example.json, targets.example.json
 trader-broker/      SKILL.md, ticket.py, claude_desktop_config.example.json
-trader-alerts/      SKILL.md, alerts.py, alerts.example.json, nse_data.py, india_signals.py, india_calendar.py
+trader-alerts/      SKILL.md, alerts.py, alerts.example.json, nse_data.py, india_signals.py, india_calendar.py, angel_one.py
 trader-analyst/     SKILL.md, facts.py, india_http.py, india_results.py, metrics.example.json
 trader-pelosi/      SKILL.md, smartmoney.py, india_http.py
 tests/              unittest suite + offline fixtures
@@ -259,7 +277,7 @@ requirements.txt    Python packages (Python 3.10+)
 
 The shared modules (`nse_data.py`, `india_http.py`, `india_results.py`,
 `india_signals.py`, `india_catalysts.py`, `india_market.py`, `india_bars.py`, `india_calendar.py`,
-`india_costs.py`) are copied into each folder that uses them so every skill
+`india_costs.py`, `angel_one.py`) are copied into each folder that uses them so every skill
 works on its own; the tests keep the copies identical.
 
 MIT. Made by [Jake Schincariol](https://opusjake.ai).
