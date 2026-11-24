@@ -245,7 +245,7 @@ class Study(unittest.TestCase):
 class Suggest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
-        self.con, self.days = build_db(os.path.join(self.tmp, "e.sqlite"), n_events=70, every=9)
+        self.con, self.days = build_db(os.path.join(self.tmp, "e.sqlite"), n_events=110, every=6)
         self.today = self.days[-1]
 
     def tearDown(self):
@@ -336,7 +336,7 @@ class Suggest(unittest.TestCase):
 class Shorts(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
-        self.con, self.days = build_db(os.path.join(self.tmp, "e.sqlite"), n_events=70, every=9)
+        self.con, self.days = build_db(os.path.join(self.tmp, "e.sqlite"), n_events=110, every=6)
         self.today = self.days[-1]
 
     def tearDown(self):

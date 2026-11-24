@@ -65,10 +65,18 @@ bars), `--offline FILE` (a saved Yahoo chart JSON, `.json` or `.json.gz`),
    five-minute bars, 9:15 to 3:30 India time (IST). Half days, gaps and today
    are left out. Every bar becomes four ratios to the bar before it:
    open, high, low and close over the previous close.
-2. **One replay.** Start at the entry price. For each bar left in the day,
-   pick a past bar from the same time of day (plus or minus 2 bars) at
-   random, and scale it to the current price. Bar by bar, it checks the stop
-   first, then the target. A bar that touches both counts as the stop.
+2. **One replay** (`--model blocks`, the default). Start at the entry price.
+   The rest of the day is stitched from hour-long blocks (12 bars) of past
+   sessions at the same clock times, so momentum, reversals and volatility
+   clustering stay as they happened. The blocks come from the past sessions
+   most like today (nearest on the opening gap, the volatility and the move up
+   to the entry; at least 15, half the pool), each scaled to today's
+   volatility (0.5x to 2.5x), with the pool's average drift taken out so a
+   stock that rallied lately does not make every long look good. Bar by bar,
+   it checks the stop first, then the target. A bar that touches both counts
+   as the stop. `--model bars` is the original reel's model: every bar drawn
+   on its own from the same time of day (plus or minus 2 bars); it breaks
+   momentum and keeps the drift, which flatters trades with the trend.
 3. **10,000 replays** give four odds. Target first. Stop first. Neither,
    which means the trade was still open at `--until` (default 3:30 PM, the
    close). Green, which means target
@@ -142,12 +150,18 @@ It prints, with the sample size on every line: the day-0 gap and move, the 5
 days before, the overnight gap (day-0 close to the next open), day 1, 5 and 10
 closes, the same against the market (the median NSE stock), the best and worst
 point in 10 days, the run-up to a board meeting, and a table by day-0 move
-(down >5 % ... up >5 %). Then it replays a grid of rules on every past event:
-entry at the day-0 close, the next open or the day-0 open; stop 1 to 3 x the
-stock's ATR; target 1 to 3 x the risk; out by day 1 to 10. The rule with the
-best lower bound on its average is chosen on events before the last 12 months
-and checked on the last 12 months; 10,000 bootstrap resamples (seed 7) give
-the range of the average and how often the edge is above zero. A gap through
+(down >5 % ... up >5 %). Then it replays a small rule set fixed in advance on
+every past event: for each entry (the day-0 close, the next open or the day-0
+open) the overnight gap, plain holds of 1, 3 and 5 sessions, a 1-day bracket
+(1 x ATR stop, 1.5R target) and a 3-day bracket (1.5 x ATR, 2R); `--grid full`
+tries the old 85-rule grid, labelled exploratory. The rule with the best lower
+bound on its average is chosen on events before the last 12 months; a
+Reality Check (the choice re-run in 2,000 date-block resamples) gives the chance
+that the best of these rules looks that good with no edge in any of them, and
+10,000 date-block resamples (filings on the same date move together) give the
+range of the average. "edge" needs a Reality Check p of 0.10 or less AND at
+least 30 trades in the last 12 months with a lower bound above zero; ideas lead
+with those last-12-months numbers. A gap through
 the stop is filled at the open, and a stop and target in one bar count as the
 stop. Fewer than 30 events and a type falls back to its family (CEO change ->
 management); still fewer, no odds.

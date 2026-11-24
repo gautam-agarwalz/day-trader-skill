@@ -194,6 +194,12 @@ Overnight (swing) holds are off until you turn them on in `trader/config.json`
 (`"swing": {"allow_overnight": true}`); then the exit planner, budget, risk
 and alerts handle an exit-by date and size on the gap risk.
 
+**The statistics guard against luck.** Event-study rules come from a small set fixed in advance, the
+pick is tested against best-of-many luck (a Reality Check) with dates resampled as blocks, and an
+"edge" must hold on at least 30 trades of the last 12 months. The intraday Time Machine replays
+hour-long blocks of the most similar past sessions, scaled to today's volatility with the drift taken
+out; swing replays start from past days that looked like today. All of it still describes the past.
+
 **The engine's maps and gates are rules, not insight.** The macro theme map
 (gold, war, crude, tariffs, the Fed, metals -> NSE stocks) holds editable
 defaults, not findings. Gate 3 is volume: 2x volume is not proof that an

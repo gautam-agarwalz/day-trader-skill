@@ -53,6 +53,7 @@ def plan(**kw):
 
 
 def machine(p=None, text=TEXT, now=NOW_UTC, **kw):
+    kw.setdefault("model", "bars")          # the reel's numbers come from the original bar-by-bar model
     return tm.time_machine(text, p or plan(), now, **kw)
 
 
@@ -78,6 +79,8 @@ def ist(ts):
 
 def run(argv):
     out, err = io.StringIO(), io.StringIO()
+    if argv and argv[0] in ("run", "chart") and "--model" not in argv and "--from" not in argv:
+        argv = list(argv) + ["--model", "bars"]  # the reel's numbers (the default is now the blocks model)
     with redirect_stdout(out), redirect_stderr(err):
         code = tm.main(argv)
     return code, out.getvalue(), err.getvalue()

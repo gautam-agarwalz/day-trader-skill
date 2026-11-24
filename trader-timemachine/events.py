@@ -639,6 +639,55 @@ def windows_from_bars(bars, days=3):
     return out
 
 
+def _states(rows, n=14):
+    """Per day t (with 25+ days before it): (5-day move in ATRs, distance from the 20-day average in ATRs,
+    ATR % against its own 100-day median). How a day 'looks' before a swing entry at its close."""
+    out = {}
+    trs = [None] + [max(rows[i][1], rows[i - 1][3]) - min(rows[i][2], rows[i - 1][3]) for i in range(1, len(rows))]
+    atrp = {}
+    for t in range(n, len(rows)):
+        a = sum(trs[t - n + 1:t + 1]) / n
+        atrp[t] = a / rows[t][3] if rows[t][3] else None
+    for t in range(25, len(rows)):
+        c = rows[t][3]
+        a = atrp.get(t)
+        if not a or not c:
+            continue
+        m20 = sum(r[3] for r in rows[t - 19:t + 1]) / 20
+        hist = sorted(v for k, v in atrp.items() if t - 100 <= k <= t and v)
+        med = hist[len(hist) // 2] if hist else a
+        out[t] = ((c / rows[t - 5][3] - 1) / a, (c / m20 - 1) / a, a / med if med else 1.0)
+    return out
+
+
+def windows_like(bars, days=3, keep=0.5, min_n=60):
+    """Forward windows from the past days that looked most like the last day (windows_from_bars, conditioned):
+    the nearest `keep` share (at least min_n) by 5-day move, trend distance and volatility state.
+    -> (windows, facts)."""
+    rows = [(b["o"], b["h"], b["l"], b["c"]) if isinstance(b, dict) else tuple(b[:4]) for b in bars]
+    st = _states(rows)
+    last = len(rows) - 1
+    if last not in st:
+        w = windows_from_bars(bars, days)
+        return w, {"conditioned": False, "windows": len(w), "why": "too little history to describe the day"}
+    today = st[last]
+    cand = [t for t in st if t + days <= last and rows[t][3]]
+    if len(cand) < min_n:
+        w = windows_from_bars(bars, days)
+        return w, {"conditioned": False, "windows": len(w), "why": "under %d comparable days" % min_n}
+    cols = list(zip(*[st[t] for t in cand]))
+    sds = [statistics.pstdev(c) or 1.0 for c in cols]
+    dist = {t: sum(((st[t][j] - today[j]) / sds[j]) ** 2 for j in range(3)) for t in cand}
+    n = max(min_n, int(len(cand) * keep))
+    chosen = sorted(cand, key=lambda t: dist[t])[:n]
+    w = [[(o / rows[t][3], h / rows[t][3], lo / rows[t][3], c / rows[t][3]) for o, h, lo, c in rows[t + 1:t + 1 + days]]
+         for t in sorted(chosen)]
+    return w, {"conditioned": True, "windows": len(w), "of": len(cand),
+               "today": {"move5_atr": round(today[0], 2), "vs_sma20_atr": round(today[1], 2),
+                         "vol_state": round(today[2], 2)},
+               "why": "the %d past days most like the last one (5-day move, trend, volatility)" % len(w)}
+
+
 def windows_from_events(events, days=3):
     """Day-0 forward paths of past events (collect / study): already relative to the day-0 close."""
     return [e["path"][:days] for e in events if len(e.get("path") or []) >= days]
@@ -752,6 +801,30 @@ def rule_grid(entries, cost=COST, meeting=False):
     return rules
 
 
+# The rules a study tries, fixed in advance (not searched): for each entry the overnight gap (close entries),
+# plain holds of 1, 3 and 5 sessions, a 1-day bracket (1 x ATR stop, 1.5R target) and a 3-day bracket (1.5 x ATR,
+# 2R). Six or fewer per entry instead of 85: picking the best of hundreds of correlated rules finds "edges" in
+# noise. rule_grid() stays for exploring (study --grid full), labelled as exploratory.
+FIXED = (("hold", 1, None, None), ("hold", 3, None, None), ("hold", 5, None, None), ("bracket", 1, 1.0, 1.5),
+         ("bracket", 3, 1.5, 2.0))
+RC_SIMS = 2000          # Reality Check resamples
+RC_P = 0.10             # the best rule must beat the best-of-K luck at this level
+OOS_MIN = 30            # trades in the last 12 months needed to confirm a rule
+
+
+def rule_set(entries, cost=COST):
+    rules = []
+    for e in entries:
+        if e == "close0":
+            rules.append({"entry": e, "kind": "gap", "days": 1, "cost": cost})
+        for kind, n, k, r in FIXED:
+            rule = {"entry": e, "kind": kind, "days": n, "cost": cost}
+            if kind == "bracket":
+                rule.update(stop_atr=k, target_r=r)
+            rules.append(rule)
+    return rules
+
+
 def describe_rule(rule, side=1):
     e = ENTRY_TEXT[rule["entry"]]
     if side < 0:
@@ -772,35 +845,92 @@ def _pct(xs, q):
     return s[i]
 
 
-def bootstrap(rets, sims=SIMS, seed=SEED):
-    """10,000 resamples of the past trades: the range of the average and of the win rate."""
+def bootstrap(rets, sims=SIMS, seed=SEED, groups=None):
+    """Resamples of the past trades: the range of the average and of the win rate. With `groups` (each trade's
+    day-0 date) whole dates are resampled together, because filings that share a date (a results season, a
+    market-wide gap) move together and are not independent trades."""
     if not rets:
         return None
+    groups = groups if groups and len(groups) == len(rets) else list(range(len(rets)))
+    keys = sorted(set(groups))
+    gi = {g: i for i, g in enumerate(keys)}
+    G = len(keys)
+    sums, cnts, wins = [0.0] * G, [0] * G, [0] * G
+    for r, g in zip(rets, groups):
+        j = gi[g]
+        sums[j] += r
+        cnts[j] += 1
+        wins[j] += 1 if r > 0 else 0
     try:
         import numpy as np
         rng = np.random.default_rng(seed)
-        a = np.asarray(rets, dtype=float)
-        means, wins = [], []
-        chunk = max(1, min(sims, 2000000 // max(1, len(a))))
+        S, C, W = np.asarray(sums), np.asarray(cnts, float), np.asarray(wins, float)
+        means, wr = [], []
+        chunk = max(1, min(sims, 4000000 // max(1, G)))
         done = 0
         while done < sims:
             m = min(chunk, sims - done)
-            idx = rng.integers(0, len(a), size=(m, len(a)))
-            s = a[idx]
-            means.extend(s.mean(axis=1).tolist())
-            wins.extend((s > 0).mean(axis=1).tolist())
+            idx = rng.integers(0, G, size=(m, G))
+            c = C[idx].sum(axis=1)
+            means.extend((S[idx].sum(axis=1) / c).tolist())
+            wr.extend((W[idx].sum(axis=1) / c).tolist())
             done += m
     except ImportError:  # pandas brings numpy, but keep working without it
         import random
         rnd = random.Random(seed)
-        means, wins = [], []
+        means, wr = [], []
         for _ in range(min(sims, 2000)):
-            s = rnd.choices(rets, k=len(rets))
-            means.append(sum(s) / len(s))
-            wins.append(sum(1 for x in s if x > 0) / len(s))
+            pick = [rnd.randrange(G) for _ in range(G)]
+            c = sum(cnts[j] for j in pick)
+            means.append(sum(sums[j] for j in pick) / c)
+            wr.append(sum(wins[j] for j in pick) / c)
     return {"sims": len(means), "mean_p5": _pct(means, 0.05), "mean_p50": _pct(means, 0.5), "mean_p95": _pct(means, 0.95),
-            "win_p5": _pct(wins, 0.05) * 100, "win_p95": _pct(wins, 0.95) * 100,
-            "p_edge": sum(1 for m in means if m > 0) / len(means) * 100}
+            "win_p5": _pct(wr, 0.05) * 100, "win_p95": _pct(wr, 0.95) * 100,
+            "p_edge": sum(1 for m in means if m > 0) / len(means) * 100, "blocks": G}
+
+
+def reality_check(results_by_rule, sims=RC_SIMS, seed=SEED):
+    """White's Reality Check, studentized, with a date-block bootstrap. results_by_rule = {rule index:
+    [(day0, net %)]}. The statistic is the best rule's t-value; each resample re-centres every rule on its own
+    average and takes the best again, so the p-value is the chance that the best of these K rules looks this good
+    with no edge in any of them. None without numpy or with fewer than 2 rules."""
+    try:
+        import numpy as np
+    except ImportError:
+        return None
+    rules = [k for k, v in results_by_rule.items() if len(v) >= MIN_EVENTS]
+    if len(rules) < 2:
+        return None
+    dates = sorted({d for k in rules for d, _ in results_by_rule[k]})
+    di = {d: i for i, d in enumerate(dates)}
+    G, K = len(dates), len(rules)
+    S = np.zeros((G, K))
+    C = np.zeros((G, K))
+    t_obs, mu, se = [], np.zeros(K), np.zeros(K)
+    for j, k in enumerate(rules):
+        xs = np.asarray([x for _, x in results_by_rule[k]])
+        for d, x in results_by_rule[k]:
+            S[di[d], j] += x
+            C[di[d], j] += 1
+        mu[j] = xs.mean()
+        se[j] = (xs.std() / math.sqrt(len(xs))) or 1e-9
+        t_obs.append(mu[j] / se[j])
+    v_obs = max(t_obs)
+    rng = np.random.default_rng(seed)
+    beats = 0
+    chunk = max(1, min(sims, 400000 // max(1, G)))
+    done = 0
+    while done < sims:
+        m = min(chunk, sims - done)
+        idx = rng.integers(0, G, size=(m, G))
+        s_ = S[idx].sum(axis=1)
+        c_ = C[idx].sum(axis=1)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            t_star = ((s_ / np.where(c_ > 0, c_, np.nan)) - mu) / se
+        v_star = np.nanmax(t_star, axis=1)
+        beats += int((v_star >= v_obs).sum())
+        done += m
+    return {"p": round(beats / float(sims), 4), "rules": K, "best_t": round(v_obs, 2), "sims": sims, "blocks": G}
 
 
 def score(results):
@@ -821,37 +951,58 @@ def score(results):
             "gap_through": round(hows.get("stop gap", 0) / n * 100, 1)}
 
 
-def best_rule(events, side=1, entries=None, cost=COST, split=None, sims=SIMS, keep=None):
-    """Pick the rule on events before `split` (by lower bound on the average), check it after."""
+def best_rule(events, side=1, entries=None, cost=COST, split=None, sims=SIMS, keep=None, grid="fixed"):
+    """Pick a rule on the events before `split` (by the lower bound of its average) from a small fixed set, test
+    the pick against best-of-K luck (Reality Check), then check it on the last 12 months.
+    Verdicts: "edge" (Reality Check p <= 0.10, the in-sample lower 5 % of the resampled average above 0, and
+    at least 30 trades in the last 12 months whose lower bound is above 0); "edge, not confirmed out of sample"
+    (30+ recent trades, positive but not clearly); "edge, not checked out of sample" (fewer than 30 recent trades);
+    "failed out of sample"; "chance" (the Reality Check says luck explains it); "weak"; "none". Only "edge"
+    becomes an idea."""
     entries = entries or ("close0", "open1")
     ins = [e for e in events if not split or e["day0"] < split]
     oos = [e for e in events if split and e["day0"] >= split]
     checked = True
     if len(ins) < MIN_EVENTS:   # a short history: choose on everything, no out-of-sample check possible
         ins, oos, checked = events, [], False
-    best = None
-    for rule in rule_grid(entries, cost):
-        if keep and not keep(rule):
+    rules = [r for r in (rule_grid(entries, cost) if grid == "full" else rule_set(entries, cost))
+             if not keep or keep(r)]
+    best, by_rule = None, {}
+    for j, rule in enumerate(rules):
+        pairs = [(e["day0"], x) for e, x in ((e, trade(e, rule, side)) for e in ins) if x]
+        if len(pairs) < MIN_EVENTS:
             continue
-        res = [x for x in (trade(e, rule, side) for e in ins) if x]
-        if len(res) < MIN_EVENTS:
-            continue
+        res = [x for _, x in pairs]
+        by_rule[j] = [(d, x[0]) for d, x in pairs]
         s = score(res)
         if best is None or s["lower"] > best[1]["lower"]:
-            best = (rule, s, res)
+            best = (rule, s, res, [d for d, _ in pairs])
     if not best:
         return None
-    rule, s, res = best
-    s["bootstrap"] = bootstrap([x for x, _ in res], sims)
+    rule, s, res, dates = best
+    s["bootstrap"] = bootstrap([x for x, _ in res], sims, groups=dates)
+    rc = reality_check(by_rule)
     out_res = [x for x in (trade(e, rule, side) for e in oos) if x]
     o = score(out_res) if out_res else None
-    verdict = "edge" if s["bootstrap"]["mean_p5"] > 0 else "weak" if s["mean"] > 0 else "none"
-    if o and o["n"] >= 10 and o["mean"] <= 0:
+    lucky = rc is not None and rc["p"] > RC_P
+    if s["bootstrap"]["mean_p5"] > 0 and not lucky:
+        verdict = "edge"
+    elif s["bootstrap"]["mean_p5"] > 0:
+        verdict = "chance"
+    else:
+        verdict = "weak" if s["mean"] > 0 else "none"
+    if o and o["n"] >= OOS_MIN and o["mean"] <= 0:
         verdict = "failed out of sample"
-    elif verdict == "edge" and not (o and o["n"] >= 10):
-        verdict = "edge, not checked out of sample"
+    elif verdict == "edge":
+        if not (o and o["n"] >= OOS_MIN):
+            verdict = "edge, not checked out of sample"
+        elif o["lower"] <= 0:
+            verdict = "edge, not confirmed out of sample"
     return {"rule": rule, "text": describe_rule(rule, side), "in_sample": s, "out_of_sample": o, "verdict": verdict,
-            "side": "long" if side > 0 else "short", "oos_checked": checked}
+            "side": "long" if side > 0 else "short", "oos_checked": checked,
+            "selection": {"rules_tested": len(by_rule), "grid": grid, "reality_check": rc,
+                          "note": "exploratory: picked from the full grid" if grid == "full" else
+                          "picked from a fixed set of %d rules" % len(by_rule)}}
 
 
 def summarise(events, market=None):
@@ -896,7 +1047,7 @@ def split_date(cal, before=None):
 
 
 def study(con, etype, session=None, bucket=None, side=1, cost=COST, min_turnover=MIN_TURNOVER_CR, sims=SIMS,
-          cal=None, fallback=True, entries=None, keep=None, before=None):
+          cal=None, fallback=True, entries=None, keep=None, before=None, grid="fixed"):
     """Everything about one event type (falling back to its family when there are too few).
     `before` limits it to what was known at that time (no look-ahead when replaying a past day)."""
     cal = cal or Calendar(con)
@@ -920,7 +1071,7 @@ def study(con, etype, session=None, bucket=None, side=1, cost=COST, min_turnover
     if not entries:
         sessions = {e["session"] for e in events}
         entries = ("open0", "close0", "open1") if "during" not in sessions else ("close0", "open1")
-    out["rules"]["best"] = best_rule(events, side, entries, cost, out["split"], sims, keep)
+    out["rules"]["best"] = best_rule(events, side, entries, cost, out["split"], sims, keep, grid)
     if "close0" in entries:
         gap_rule = {"entry": "close0", "kind": "gap", "days": 1, "cost": cost}
         res = [x for x in (trade(e, gap_rule, side) for e in events) if x]
@@ -990,6 +1141,11 @@ def print_study(out, events, file=None):
                                                           % (o["n"], _p(o["mean"]), o["win"]) if o else "no trades"))
             if not r.get("oos_checked", True):
                 w("    (under %d events before the last %d months: the rule was chosen on all of them)" % (MIN_EVENTS, OOS_MONTHS))
+            sel = r.get("selection") or {}
+            rc = sel.get("reality_check")
+            w("    selection: %s%s" % (sel.get("note", ""), "; Reality Check p = %.3f (%d rules, %d date blocks): the chance "
+                                     "the best of them looks this good with no edge in any" % (
+                                         rc["p"], rc["rules"], rc["blocks"]) if rc else ""))
             w("    verdict: %s" % r["verdict"])
     w("  History, not a forecast. Sample sizes are on every line; an overnight hold can gap through any stop.")
 
@@ -1198,9 +1354,14 @@ def suggest(con, now, items, quotes=None, cost=COST, min_turnover=MIN_TURNOVER_C
                      "reference_price": ref, "stop": stop, "target": target,
                      "exit": "the next open" if rule["kind"] == "gap" else "the close of day %d" % rule["days"]
                      if exit_day != entry_day else "the close the same day (flat by 15:15)",
-                     "average_net_pct": i["mean"], "median_net_pct": i["median"], "win_pct": i["win"],
-                     "range_5_95": [i["p5"], i["p95"]], "outcomes": i["outcomes"], "gap_through_stop_pct": i["gap_through"],
-                     "bootstrap": i.get("bootstrap"), "trades": i["n"],
+                     # the headline is the last 12 months (out of sample); the in-sample pick is kept beside it
+                     "average_net_pct": (o or i)["mean"], "median_net_pct": (o or i)["median"],
+                     "win_pct": (o or i)["win"], "range_5_95": [(o or i)["p5"], (o or i)["p95"]],
+                     "outcomes": i["outcomes"], "gap_through_stop_pct": i["gap_through"],
+                     "bootstrap": i.get("bootstrap"), "trades": (o or i)["n"],
+                     "headline": "last 12 months" if o else "in sample",
+                     "in_sample": {"n": i["n"], "mean": i["mean"], "win": i["win"]},
+                     "selection": best.get("selection"),
                      "out_of_sample": {"n": o["n"], "mean": o["mean"], "win": o["win"]} if o else None,
                      "verdict": best["verdict"], "worst_5pct": i["p5"], "data_through": last_day})
         ideas.append(idea)
@@ -1231,12 +1392,14 @@ def print_ideas(doc, file=None):
         if d.get("stop"):
             lv += ", stop Rs %.2f, target Rs %.2f" % (d["stop"], d["target"])
         w(lv + ", exit %s" % d["exit"])
-        w("   past %d trades (%s%s): average %s net, %0.f%% winners, 5-95%% %s to %s; edge above zero in %.0f%% of %d resamples"
-          % (d["trades"], d["studied"], ", day-0 " + d["bucket"] if d["bucket"] != "any" else "", _p(d["average_net_pct"]),
-             d["win_pct"], _p(d["range_5_95"][0]), _p(d["range_5_95"][1]), b.get("p_edge", 0), b.get("sims", 0)))
-        o = d.get("out_of_sample")
-        if o:
-            w("   last %d months: %d trades, average %s" % (OOS_MONTHS, o["n"], _p(o["mean"])))
+        w("   %s: %d trades (%s%s): average %s net, %0.f%% winners, 5-95%% %s to %s"
+          % (d.get("headline", "past"), d["trades"], d["studied"], ", day-0 " + d["bucket"] if d["bucket"] != "any" else "",
+             _p(d["average_net_pct"]), d["win_pct"], _p(d["range_5_95"][0]), _p(d["range_5_95"][1])))
+        ins, rc = d.get("in_sample") or {}, ((d.get("selection") or {}).get("reality_check") or {})
+        if ins:
+            w("   chosen on %d earlier trades (average %s); edge above zero in %.0f%% of %d date-block resamples%s"
+              % (ins["n"], _p(ins["mean"]), b.get("p_edge", 0), b.get("sims", 0),
+                 "; Reality Check p %.3f over %d rules" % (rc["p"], rc["rules"]) if rc else ""))
         if d.get("note"):
             w("   note: %s" % d["note"])
         w("   %s" % d["link"])
@@ -1299,7 +1462,7 @@ def cmd_study(args, con):
     side = -1 if args.short else 1
     before = ih.now_ist().strftime("%Y-%m-%d %H:%M") if args.now else None
     out, events = study(con, args.type, args.session, args.bucket, side, args.cost, args.min_turnover, args.sims,
-                        before=before)
+                        before=before, grid=args.grid)
     if args.json:
         print(json.dumps(out, indent=1, default=str))
     else:
@@ -1447,7 +1610,9 @@ def main(argv=None):
     s.add_argument("--type", required=True)
     s.add_argument("--session", choices=("pre", "during", "after"))
     s.add_argument("--bucket", choices=[b_[2] for b_ in BUCKETS])
-    s.add_argument("--short", action="store_true", help="study the short side (ideas stay long-only for now)")
+    s.add_argument("--short", action="store_true", help="study the short side")
+    s.add_argument("--grid", default="fixed", choices=("fixed", "full"),
+                   help="fixed (default): a small rule set chosen in advance; full: the 85-rule grid, exploratory only")
     s.add_argument("--json", action="store_true")
     g = sub.add_parser("suggest", help="ideas from today's trader-news / trader-pelosi items")
     g.add_argument("--base", default=BASE)

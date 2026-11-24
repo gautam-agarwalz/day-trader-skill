@@ -163,10 +163,10 @@ def swing_tm(data, sym, side, entry, stop, target, sims, event_type=None):
     out = {}
     product = "delivery" if side == "long" else "futures"       # an overnight short is only possible in futures
     cost = india_costs.cost_pct(product, turnover_cr=data.turnover_cr(sym))
-    w = ev.windows_from_bars(rows, SWING_DAYS)
+    w, cond = ev.windows_like(rows, SWING_DAYS)        # past days that looked like today, not every day
     if len(w) >= 20:
         r = ev.swing_paths(w, entry, stop, target, 1 if side == "long" else -1, SWING_DAYS, sims, cost=cost)
-        out = dict(r, engine="events.swing_paths (own daily history, %d windows)" % r["windows"], product=product,
+        out = dict(r, engine="events.swing_paths (%s)" % cond["why"], conditioning=cond, product=product,
                    after_tax_pct=india_costs.after_tax(product, r["mean_net_pct"]))
     else:
         out = {"error": "only %d daily windows for %s (need 20)" % (len(w), sym)}

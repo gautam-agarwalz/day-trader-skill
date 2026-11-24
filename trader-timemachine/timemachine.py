@@ -339,17 +339,96 @@ def pct(a, q):
     return a[min(len(a) - 1, int(q * len(a)))]
 
 
-def simulate(pool, entry, stop, target, k, last, replays=10000, seed=19, window=2, side="buy"):
-    """Monte Carlo replays of bars k+1..last. Same draws and order as the reel's sim.py."""
+class SlotBars(object):
+    """The original model ('bars'): every bar drawn on its own from that clock slot (+/- window) of any past
+    session. Same draws and order as the reel's sim.py. It breaks momentum and volatility clustering."""
+
+    def __init__(self, pool, window=2):
+        self.pool, self.window = pool, window
+
+    def start(self, rng):
+        return None
+
+    def bar(self, rng, i, state):
+        j = i if self.window == 0 else min(SESSION_BARS - 1, max(1, i + rng.randint(-self.window, self.window)))
+        return rng.choice(self.pool[j])
+
+
+class SessionBlocks(object):
+    """The default model ('blocks'): each replay stitches blocks of `block` consecutive bars (an hour by default)
+    taken from past sessions at the same clock times, so a block keeps its momentum, reversals and
+    volatility clustering. Sessions come from the ones most like today (nearest on the gap, the volatility and
+    the move up to the entry), each is scaled to today's volatility, and the pool's average drift is taken out so a
+    stock that rallied lately does not make every long look good."""
+
+    def __init__(self, sessions, scales, mu, block=12):
+        self.sessions, self.scales, self.mu, self.block = sessions, scales, mu, block
+
+    def start(self, rng):
+        return {"s": None, "n": 0}
+
+    def bar(self, rng, i, state):
+        if state["s"] is None or state["n"] % self.block == 0:
+            state["s"] = rng.randrange(len(self.sessions))
+        state["n"] += 1
+        D, s = self.sessions[state["s"]], self.scales[state["s"]]
+        pc = D[i - 1]["c"]
+        # the drift accrues through the bar: none at the open, all of it by the close, half at the high / low
+        o, h, l, c = (math.exp(s * (math.log(D[i][f] / pc) - w * self.mu))
+                      for f, w in (("o", 0.0), ("h", 0.5), ("l", 0.5), ("c", 1.0)))
+        return o, max(h, o, c), min(l, o, c), c
+
+
+MIN_SIMILAR = 15     # the block model keeps the nearest half of the pool, at least this many sessions
+SCALE_CLIP = (0.5, 2.5)
+
+
+def _session_features(D, k, prev_close=None):
+    """(gap, volatility, move) of a session up to bar k, from its own bars (logs)."""
+    gap = math.log(D[0]["o"] / prev_close) if prev_close else 0.0
+    rets = [math.log(D[i]["c"] / D[i - 1]["c"]) for i in range(1, k + 1) if D[i - 1]["c"] and D[i]["c"]]
+    if len(rets) >= 2:
+        vol = statistics.pstdev(rets)
+    else:
+        vol = math.log(D[0]["h"] / D[0]["l"]) / 2.0 if D[0]["l"] else 0.0
+    move = math.log(D[k]["c"] / D[0]["o"]) if D[0]["o"] else 0.0
+    return gap, vol, move
+
+
+def block_source(pool_from, today, k, last, prev_closes, today_prev_close, block=12):
+    """SessionBlocks from the pool's sessions most like `today` (bars 0..k), scaled to today's volatility.
+    -> (source, facts for the report)."""
+    tf = _session_features(today, k, today_prev_close)
+    feats = [_session_features(D, k, prev_closes.get(d)) for d, D in pool_from]
+    cols = list(zip(*feats))
+    sds = [statistics.pstdev(c) or 1.0 for c in cols]
+    dist = [sum(((f[j] - tf[j]) / sds[j]) ** 2 for j in range(3)) for f in feats]
+    n = min(len(pool_from), max(MIN_SIMILAR, len(pool_from) // 2))
+    keep = sorted(range(len(pool_from)), key=lambda i: dist[i])[:n]
+    sessions = [pool_from[i][1] for i in keep]
+    scales = []
+    for i in keep:
+        v = feats[i][1]
+        s = tf[1] / v if (v and tf[1]) else 1.0
+        scales.append(min(SCALE_CLIP[1], max(SCALE_CLIP[0], s)))
+    rets = [math.log(D[i]["c"] / D[i - 1]["c"]) for D in sessions for i in range(k + 1, last + 1)]
+    mu = statistics.mean(rets) if rets else 0.0
+    facts = {"model": "blocks", "block_bars": block, "similar_sessions": n, "pool_sessions": len(pool_from),
+             "similar_dates": [pool_from[i][0] for i in keep],
+             "vol_scale_median": round(statistics.median(scales), 2),
+             "drift_removed_bp_per_bar": round(mu * 1e4, 3)}
+    return SessionBlocks(sessions, scales, mu, block), facts
+
+
+def simulate(pool, entry, stop, target, k, last, replays=10000, seed=19, window=2, side="buy", source=None):
+    """Monte Carlo replays of bars k+1..last. source: SessionBlocks (default in time_machine) or SlotBars
+    (the reel's model; also what a bare `pool` means here)."""
     long = side == "buy"
     risk = (entry - stop) if long else (stop - entry)
     r_target = round(((target - entry) if long else (entry - target)) / risk, 4)
-
-    def slot(rng, i):
-        return i if window == 0 else min(SESSION_BARS - 1, max(1, i + rng.randint(-window, window)))
+    src = source or SlotBars(pool, window)
 
     rng = random.Random(seed)
-    choice = rng.choice
     outcomes, closes, paths = [], [], []
     maes, hit_steps = [], []
     sum_r = [0.0] * (last - k)          # average R if you got out at the close of each bar (exit window)
@@ -359,8 +438,9 @@ def simulate(pool, entry, stop, target, k, last, replays=10000, seed=19, window=
         keep = n < SAMPLE_PATHS
         path = [entry]
         adverse = 0.0
+        state = src.start(rng)
         for step, i in enumerate(range(k + 1, last + 1)):
-            o, h, l, c = choice(pool[slot(rng, i)])
+            o, h, l, c = src.bar(rng, i, state)
             hi, lo, cl = p * h, p * l, p * c
             if outcome is None:
                 adverse = max(adverse, min(risk, (entry - lo) if long else (hi - entry)))
@@ -394,13 +474,13 @@ def simulate(pool, entry, stop, target, k, last, replays=10000, seed=19, window=
     srt = sorted(closes)
     # percentile bands per bar for the fan chart: a second run of 2,000 paths, same seed
     rng = random.Random(seed)
-    choice = rng.choice
     allp = []
     for n in range(BAND_PATHS):
         p = entry
         path = [entry]
+        state = src.start(rng)
         for i in range(k + 1, last + 1):
-            o, h, l, c = choice(pool[slot(rng, i)])
+            o, h, l, c = src.bar(rng, i, state)
             p = p * c
             path.append(p)
         allp.append(path)
@@ -737,7 +817,7 @@ def event_pool(etype, before, chart_for, now_utc, db=EVENTS_DB, limit=EVENT_POOL
 
 
 def time_machine(text, plan, now_utc, replays=10000, seed=19, window=2, until=None, source="yahoo",
-                 event_sessions=None, event_info=None, cost_r=None, turnover_cr=None):
+                 event_sessions=None, event_info=None, cost_r=None, turnover_cr=None, model="blocks", block=12):
     """Chart JSON text + a normalized plan -> the timemachine.json document.
     event_sessions: day-0 sessions of other stocks' past events of the same kind (event_pool); with at
     least EVENT_POOL_MIN of them the replays are drawn from those instead of the stock's own days."""
@@ -795,7 +875,22 @@ def time_machine(text, plan, now_utc, replays=10000, seed=19, window=2, until=No
             warn.append("only %d event-day sessions of %s in the last 60 days (need %d): the replays use %s's own "
                         "days" % (len(event_sessions), ei.get("used", "?"), EVENT_POOL_MIN, sym))
     pool = build_pool(pool_from)
-    mc = simulate(pool, plan["entry"], plan["stop"], plan["target"], k, last, replays, seed, window, plan["side"])
+    facts = {"model": "bars", "window": window}
+    src = None
+    if model == "blocks":
+        days_sorted = sorted(days)
+        prev_close = {}
+        for a_, b_ in zip(days_sorted, days_sorted[1:]):
+            last_bar = days[a_][max(days[a_])]
+            prev_close[b_] = last_bar["c"]
+        today = [entry_day[i] for i in range(k + 1) if i in entry_day]
+        if len(today) == k + 1:
+            src, facts = block_source(pool_from, today, k, last, prev_close, prev_close.get(plan["date"]), block)
+        else:
+            warn.append("bars missing before the entry today: the replay draws bar by bar (the 'bars' model)")
+    mc = simulate(pool, plan["entry"], plan["stop"], plan["target"], k, last, replays, seed, window, plan["side"],
+                  source=src)
+    mc.update(facts)
     mc = dict(mc, until=clock24(until_min), pool_sessions=len(pool_from), pool_from=pool_from[0][0],
               pool_to=pool_from[-1][0], pool_kind="event days" if pool_note else "own days",
               band_times=[clock24(OPEN_MIN + 5 * (j + 1)) for j in range(k, last + 1)])
@@ -986,7 +1081,8 @@ def compute(a):
                 return fetch_chart(s)
         ev_sessions, ev_info = event_pool(etype, plan["date"], chart_for, now, a.events_db,
                                           exclude=nse_base(plan["symbol"]))
-    return time_machine(text, plan, now, a.replays, a.seed, a.window, a.until, source, ev_sessions, ev_info)
+    return time_machine(text, plan, now, a.replays, a.seed, a.window, a.until, source, ev_sessions, ev_info,
+                        model=a.model, block=a.block)
 
 
 def event_notes(doc, now_utc):
@@ -1054,7 +1150,11 @@ def main(argv=None):
         p.add_argument("--stop-rule", default="auto", choices=["auto", "or_mid", "or_low", "or_high", "pct"])
         p.add_argument("--replays", type=int, default=10000)
         p.add_argument("--seed", type=int, default=19)
-        p.add_argument("--window", type=int, default=2, help="draw from the same time of day +- this many bars")
+        p.add_argument("--window", type=int, default=2, help="bars model: draw from the same time of day +- this many bars")
+        p.add_argument("--model", default="blocks", choices=["blocks", "bars"],
+                       help="blocks (default): hour-long blocks of the most similar past sessions, scaled to today's "
+                            "volatility, drift removed; bars: each bar drawn alone (the original reel's model)")
+        p.add_argument("--block", type=int, default=12, help="blocks model: bars per block (12 = an hour)")
         p.add_argument("--until", help="end each replay at this time (default 15:30, the close)")
         p.add_argument("--offline", metavar="FILE", help="a saved Yahoo chart JSON (.json or .json.gz), no network")
         p.add_argument("--event-pool", metavar="TYPE",
