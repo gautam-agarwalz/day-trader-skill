@@ -1,101 +1,151 @@
 ---
 name: trader-news
 description: >-
-  News Monitor. Tracks breaking news on every stock you watch and flags what
-  moves it: Yahoo Finance headlines per ticker, each company's 8-K filings on
-  SEC EDGAR (earnings, CEO changes, deals, restatements, bankruptcy) and how
-  far each stock is from yesterday's close. Shows only what is new since the
-  last check, newest first, in New York time, tags each item (earnings,
-  analyst, deal, halt, regulatory, macro...) and never repeats one. Use when
-  the user says "any news on TSLA", "why is this moving", "what's the news on
-  my watchlist", "morning briefing", "pre-market news", "monitor the news",
-  "did anything break", "check the 8-Ks", or after /trader-scanner finds setups.
-argument-hint: "[tickers]"
+  Indian Corporate Filings & Exchange Catalyst Scanner. Reads official NSE, BSE
+  and SEBI feeds (NSE corporate announcements and its RSS feeds for results,
+  board meetings, corporate actions, annual reports, circulars and buybacks;
+  BSE announcements; SEBI's RSS), plus NSE's ASM / GSM surveillance lists and
+  price-band revisions, and sorts every filing into catalyst tags: Quarterly
+  Results, Buybacks & Corporate Actions, Order Wins & Reg 30 Catalysts,
+  Presentations / Transcripts / Annual Reports, and Exchange & Surveillance
+  Triggers. Pulls headline numbers (revenue, profit, EPS, buyback price) from
+  the first pages of results and buyback PDFs with regex, links every item to
+  the official PDF, flags each once, and never calls a language model. Use when
+  the user says "any news on RELIANCE", "what did companies file today",
+  "results today", "order wins", "buybacks", "circuit changes", "ASM GSM",
+  "F&O inclusion", "investor presentation", "concall transcript", or "monitor
+  the filings". Also tracks government orders and tenders (govt_orders_tracker.py:
+  letters of award, L1 bids, MSEDCL, railways, power, defence, NHAI; order value
+  against market cap; cancellations, delays, liquidated damages, debarments;
+  EXECUTION LAG WATCH): use when the user says "government orders", "L1",
+  "tender", "order cancelled", "execution delay" or "order ledger".
+argument-hint: "[--tags results,buyback,orders,documents,exchange] [--mine]"
 ---
 
 # trader-news
 
-A chart can look perfect and still be about to gap on an earnings date, a
-halt or a lawsuit. Before a setup becomes a trade, this skill reads the two
-feeds that carry those first, for every stock on the watchlist, and tells you
-only what is new. It also prints how far each stock has moved today, so a
-headline and a move sit side by side.
+In India, what moves a stock is filed first: a results PDF on NSE and BSE, an
+order win under Regulation 30, a buyback letter, a price-band cut, a move into
+ASM. This skill reads those filings at the source, tags them, and shows only
+what is new. It replaces the old US headline monitor: no Yahoo, no SEC.
 
-Tool in this folder (standard library Python, no keys):
+Tool in this folder (Python 3.10+, `pip install -r requirements.txt`):
 
 ```bash
-python3 "${CLAUDE_SKILL_DIR}/news.py"                         # watchlist + plan + portfolio
-python3 "${CLAUDE_SKILL_DIR}/news.py" --tickers TSLA NVDA --hours 12
-python3 "${CLAUDE_SKILL_DIR}/news.py" --no-sec --json
+python3 "${CLAUDE_SKILL_DIR}/news.py"                          # everything new, all tags
+python3 "${CLAUDE_SKILL_DIR}/news.py" --mine                   # only your symbols
+python3 "${CLAUDE_SKILL_DIR}/news.py" --tags results,buyback   # some tags
+python3 "${CLAUDE_SKILL_DIR}/news.py" --days 3 --all --json    # wider window, seen items too
+python3 "${CLAUDE_SKILL_DIR}/news.py" --dry-run                # fetch and parse, write nothing
 ```
+
+`news.py` shares `india_http.py` (the HTTP client, the dedupe state and the
+JSON / CSV writers) with trader-pelosi.
 
 ## What it reads and writes
 
-| file / feed | what |
+| source | where |
 | --- | --- |
-| `--tickers`, else `trader/watchlist.json` | the scanner's hits (trader-scanner) |
-| `trader/plan.json` | the trade you are planning (trader-exit) |
-| `trader/portfolio.json` | what you hold (trader-broker records fills there) |
-| Yahoo Finance headline RSS | `https://feeds.finance.yahoo.com/rss/2.0/headline?s=TSLA&region=US&lang=en-US` |
-| Yahoo Finance chart endpoint | the last price against yesterday's close (unofficial, can lag) |
-| SEC EDGAR company Atom feed | 8-K by default (`--forms 8-K,10-Q` for more); needs `sec_user_agent` in `trader/config.json` or `SEC_USER_AGENT`, else filings are skipped with a note |
-| `trader/state/news.json` | what has been shown (kept 30 days) and each ticker's CIK |
+| NSE announcements, with NSE's own category | `www.nseindia.in/api/corporate-announcements` |
+| NSE circulars | `www.nseindia.in/api/circulars` |
+| NSE RSS | `nsearchives.nseindia.com/content/RSS/`: Online_announcements, Financial_Results, Board_Meetings, Corporate_action, Annual_Reports, Circulars, Daily_Buyback |
+| BSE | `api.bseindia.com/BseIndiaAPI/api/AnnSubCategoryGetData/w`; when BSE's firewall refuses (it often refuses cloud IPs), `www.bseindia.com/data/xml/announcements.xml` and `notices.xml` |
+| SEBI | `www.sebi.gov.in/sebirss.xml` |
+| surveillance | `www.nseindia.in/api/reportASM`, `reportGSM` (changes since the last run), `eq_band_changes_<DDMMYYYY>.csv` |
+| company IR pages | optional `trader/ir_watchlist.json`: `{"SYMBOL": "https://company.com/investors"}` |
 
-## The rules
+Writes `trader/catalysts/latest.json` (this run), appends new items to
+`trader/catalysts/alerts.csv` (each with its official link), and keeps
+`trader/state/catalysts.json` (every flagged item for 90 days, and the ASM /
+GSM lists).
 
-- **Headlines are leads, not facts.** Before telling the user something
-  happened, open the story or the filing and read it. Quote the source and
-  link it. Never summarise a paywalled story you could not read: say so.
-- **Filings beat headlines.** If an 8-K and a headline disagree, the 8-K is
-  what the company told the SEC.
-- **Say what it touches.** Every item lists the tickers it touches and its
-  tags: earnings, analyst, legal, deal, capital, people, risk, halt,
-  regulatory, macro. Filings marked `!` carry an important 8-K item: earnings
-  results (2.02), an officer change (5.02), an impairment (2.06), a delisting
-  notice (3.01), past financials no longer reliable (4.02), bankruptcy (1.03)
-  or a cyber incident (1.05).
-- **MOVING** marks a stock 3 % or more from yesterday's close (`--move-pct`).
-  A move with no headline is worth saying out loud too.
-- **No predictions.** Report what was published and how far the price is from
-  yesterday's close. Never say what the stock will do next.
+## The tags
+
+| tag | what earns it |
+| --- | --- |
+| `results` | NSE's results categories, "financial results", "un-audited", the results RSS |
+| `buyback` | buyback, split, bonus, dividend, record date, rights issue, ex-date, the corporate-action RSS |
+| `orders` | NSE's "Bagging/Receiving of orders/contracts", acquisitions, mergers, LoA / LoI, contracts, MoUs, capacity |
+| `documents` | investor presentations, con-call updates and transcripts, annual reports (each marked transcript, presentation, annual report or call notice) |
+| `exchange` | price band / circuit changes, ASM / GSM / ESM, F&O introductions and exclusions, index changes, MWPL / ban |
+
+A company's own name is ignored by the rules ("GSM Foils" is not a GSM
+trigger). Newspaper ads, trading-window notices and share-certificate losses
+are dropped. Untagged filings are hidden unless `--all-tags`.
+
+## Numbers from PDFs
+
+For new results and buyback items, the first `--pdf-pages` (2) pages of the PDF
+are read and regex copies out revenue, total income, net profit, EPS, the
+buyback price and size, as printed. Most results PDFs start with a cover letter
+and many carry the table as a scanned image, so often nothing is found; the item
+then says so. Never fill a missing number in: open the PDF.
 
 ## Steps
 
-1. Run the check: `python3 "${CLAUDE_SKILL_DIR}/news.py"`. Exit code 1 means
-   nothing new. `--all` shows items already seen, `--json` gives everything
-   machine readable, `--dry-run` leaves the state alone.
-2. Read the items that matter: every `!` filing, anything tagged earnings,
-   halt, legal, regulatory or risk, and every MOVING ticker first.
-3. Write a short brief, per ticker: what happened, the source and link, the
-   move, and one line on why it matters to the setup (for example "earnings
-   are this week: an overnight gap can jump past any stop").
-4. If a story changes the picture, say so before `/trader-entry` and
-   `/trader-exit`: an earnings date inside the trade, a halt, an offering.
-   Never act on a headline alone.
+1. Run `news.py` (or `--mine` for the user's symbols). Exit code 1 means
+   nothing new.
+2. Read, in order: exchange triggers on the user's symbols, results and
+   buybacks, order wins, then documents.
+3. Write a short brief per symbol: what was filed, the numbers if the tool
+   found them, the link, and one line on why it matters to a setup (results
+   tonight: an overnight gap can jump any stop; a band cut to 5 %: the stock
+   can lock in a circuit).
+4. If a filing changes the picture, say so before `/trader-entry` and
+   `/trader-exit`. Never act on a filing alone.
 
-During the session: `/loop 15m /trader-news`, or a scheduled task each
-morning before the open.
+During the session: `/loop 15m /trader-news`, or a scheduled task before the
+open and after the close.
 
-## Example: the reel
+## Government orders, tenders & execution risk (govt_orders_tracker.py)
 
-Monday 2026-10-19, TSLA broke its opening range at 10:15 AM ET. The check at
-10:15 (Yahoo Finance's TSLA feed, 16 headlines since 8:00) leads with the
-morning's real stories: "Meta and Musk earnings and September pending home
-sales: What to Watch" (8:00, earnings), "Tesla-SpaceX Merger Mania Strikes
-Wall Street Ahead of Earnings" (8:04, earnings, deal), "Tech Stock Rebound
-Nudges US Equity Futures Mostly Higher Pre-Bell" (8:02, macro). The brief:
-"Tesla reports this week, so the stock can gap overnight; today's trade is
-in and out before the close. No new 8-K." At 10:52 the price line reads
-`TSLA 366.48 +3.31% vs yesterday's close 354.72 at 10:52 ET  MOVING`. When a
-ticker has no news, say so rather than padding the brief.
+```bash
+python3 "${CLAUDE_SKILL_DIR}/govt_orders_tracker.py"               # one pass -> trader/orders/
+python3 "${CLAUDE_SKILL_DIR}/govt_orders_tracker.py" --watch 60    # every 60 s in market hours (15 min outside)
+python3 "${CLAUDE_SKILL_DIR}/govt_orders_tracker.py" ledger        # open orders and their flags
+python3 "${CLAUDE_SKILL_DIR}/govt_orders_tracker.py" --only nse,gnews --days 3 --all --dry-run
+```
+
+Sources, each on its own minimum interval so the 60-second loop never hammers
+anyone: NSE and BSE Regulation 30 announcements (60 s); Google News RSS
+searches for L1 bids, letters of award, work orders, MSEDCL, railways, power,
+defence, NHAI, cancellations and debarments (120 s); Economic Times,
+Moneycontrol and LiveMint RSS (120 s); PIB releases (5 min); GeM bid / award
+lists and CPPP debarment lists (30 min, best effort). A page that asks for a
+CAPTCHA or a login is skipped and said, never solved. Change the feed URLs in
+`trader/orders_sources.json`.
+
+For each item, by regex: the kind (award: LoA, L1, work order, contract
+awarded; cancel: cancellation, termination, withdrawal; delay: delay in
+execution, liquidated damages, a guarantee encashed; debar; milestone:
+completion, commissioning, COD), the value in Rs crore (read from the first 3
+pages of the filing's PDF when the text has none; USD at `--usd-inr` 85; an
+"order book of" figure is never the order), the timeline ("within 24
+months", "by March 2028"), the client (MSEDCL / Maharashtra, Railways, Power,
+Defence, Roads / infra, a state government; never the company itself) and
+`value / market cap` (NSE's quote API, or `trader/market_caps.json`
+`{"KEC": 8700}` when NSE refuses your network): HIGH IMPACT at 5 % or more.
+Tax, court and regulator "orders" (a GST demand, an NCLT order) are not
+contracts and are left out. News headlines are matched to listed companies
+through NSE's EQUITY_L.csv names (whole words; generic one-word names never
+count) and `trader/company_aliases.json` (`{"L&T": "LT"}`).
+
+The ledger `trader/history/orders.db` keeps every item and flags, each run:
+`EXECUTION LAG WATCH` (65 % of a stated timeline gone, no milestone filing
+since the award), `ORDER LOSS / CANCELLATION` (a cancellation, termination,
+delay or LD item after an award; matched on the value within 25 % or the
+client, otherwise "symbol only"), and `DEBARMENT`. Output:
+`trader/orders/latest.json` (with the ledger flags under `watch`) and
+`alerts.csv`, which trader-entry, exit, risk, alerts and the brief read
+through india_signals.py. Exit code 0 when something new was found.
 
 ## What it never does
 
-- Never invents or embellishes a story, a quote or a number.
-- Never trades on news, and never tells the user to buy or sell because of a
-  headline.
-- Never hammers a server: one request per feed per ticker, a pause between
-  calls, and SEC's 10 requests a second limit stays far away.
+- Never calls a language model or any AI API: tags and numbers are regex.
+- Never invents or rounds a number, and never summarises a PDF it did not read.
+- Never tells the user to buy or sell because of a filing.
+- Never hammers a server: one request per feed, a pause between requests, at
+  most `--pdf-max` (8) PDFs per run.
 
 ## Safety
 

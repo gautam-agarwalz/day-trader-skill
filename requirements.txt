@@ -1,0 +1,15 @@
+# Python 3.10 or newer. No language model is called by any tool in this repo.
+# mcp: the official Model Context Protocol Python SDK, used as a plain client for NSE's official
+# MCP servers (mcp.nseindia.in): live quotes, the equity list, daily OHLCV (trader-scanner, trader-alerts).
+mcp>=2.3,<3
+# trader-pelosi (smart money tracker) and trader-news (filings & catalyst scanner):
+requests>=2.31
+feedparser>=6.0
+pypdf>=4.0
+pdfplumber>=0.10
+pandas>=2.0
+openpyxl>=3.1
+beautifulsoup4>=4.12
+# trader-scanner global_macro_engine.py: the GDELT 2.0 DOC API client (the plain API URL is used when
+# it is missing). Free, no key.
+gdeltdoc>=1.5

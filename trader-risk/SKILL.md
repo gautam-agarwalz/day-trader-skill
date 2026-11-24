@@ -32,7 +32,7 @@ keep each loss and each day's losses small. They do not make a trade win.
 python3 "${CLAUDE_SKILL_DIR}/check.py"                           # trader/ files; writes trader/state/risk.json
 python3 "${CLAUDE_SKILL_DIR}/check.py" --json
 python3 "${CLAUDE_SKILL_DIR}/check.py" --no-write                # look without recording
-python3 "${CLAUDE_SKILL_DIR}/check.py" --now "2026-10-19 10:15"  # pin the clock (New York time)
+python3 "${CLAUDE_SKILL_DIR}/check.py" --now "2026-10-19 10:15"  # pin the clock (India time, IST)
 ```
 
 ## What it reads and writes
@@ -62,7 +62,7 @@ batch that is fine order by order but breaks a limit together is caught.
 | check | blocks when |
 | --- | --- |
 | format | no symbol, side not buy or sell, both or neither of qty and notional, a notional order that is not market + day (Alpaca's rule), a limit order with no limit price; a bracket that is not whole shares, not `day` or `gtc`, or misses its stop-loss or take-profit |
-| asset | an option symbol while `allow_options` is false; crypto or anything that is not a US stock or ETF ticker |
+| asset | an option symbol while `allow_options` is false; crypto or anything that is not an NSE symbol or a stock or ETF ticker |
 | short | a sell of more than you hold (`allow_short` false) |
 | blocked | (entries) the ticker is on the `blocked` list |
 | size | (entries) under `min_order_usd` or over `max_order_usd` |
@@ -77,6 +77,8 @@ batch that is fine order by order but breaks a limit together is caught.
 | pdt | (entries, only with `pdt_guard` true) 3 day trades already in the last 5 business days |
 | duplicate | (entries) the same symbol and side twice in one batch, or already placed today |
 | daily limit | (entries) `max_orders_per_day` orders already placed today |
+| futures | (entries whose plan says `"instrument": "futures"`) qty not a whole number of lots; an overnight short that is not in futures (India's cash shorts are intraday) |
+| swing | (entries whose plan says `"mode": "swing"`) `swing.allow_overnight` is false; `exit_by` not after today or more than `swing.max_hold_days` sessions away; over `swing.max_overnight_inr`; a `gap_risk_pct` gap that would lose more than `swing.max_loss_per_trade_inr`. The window uses `swing.no_entries_after` (15:25) instead |
 
 How the numbers work:
 
@@ -87,9 +89,10 @@ How the numbers work:
   used, and it says so.
 - **Daily loss** counts the full max loss of every entry placed today, win or
   lose, as trader-broker logged it. Three full-size trades use up a $150 day.
-- **The window** is New York time, worked out in the tool (daylight saving
-  included), never from the computer's clock zone. Weekends and NYSE holidays
-  are closed. On a 1:00 p.m. early close the window ends 3 hours earlier too.
+- **The window** is India time (IST, UTC+5:30), worked out in the tool,
+  never from the computer's clock zone. The session is 9:15 to 3:30; weekends
+  and NSE holidays are closed. On an early close the window ends earlier too
+  (the NSE has none scheduled).
   Set both `no_entries_*` to null to switch the window off.
 - **pdt_guard** (off by default) counts a day trade as a symbol bought and
   sold on the same day in the log, plus any entry placed today (it is meant
@@ -102,10 +105,24 @@ Warnings do not block, but say them to the user: a LIVE account, a number
 sent as a number instead of a string, a stop that lives only in the plan and
 not at the broker, a price too old to use, an early close today.
 
+Also blocked: an order sized for another day (its plan's date is not today), an entry in a year whose
+NSE holiday list is not loaded (`india_calendar.py` fetches it from NSE once a day; or add the dates to
+`trader/nse_holidays.json`), and an entry inside the anti-trap windows a brief plan carries (09:15-09:30,
+11:45-13:30). A short's risk is measured from the lower of the plan's entry and the live price.
+
+## Catalysts
+
+When `/trader-news` and `/trader-pelosi` have run, each order's stock is
+checked against what they saved: results due today or tomorrow, results out
+today, an ASM / GSM entry, a price band of 5 % or less, an auditor resigning,
+promoter selling, a pledge invoked or raised, institutional or insider buying.
+Each one is printed as a WARNING with its reason. None of them blocks an
+order (the user's choice); say them before asking for the yes.
+
 ## Steps
 
 1. If the price may have moved since the plan, refresh it first
-   (trader-alerts: `alerts.py quote TSLA --write`).
+   (trader-alerts: `alerts.py quote RELIANCE --write`).
 2. Run `check.py`. Exit code 0 means every order passed, 1 means at least one
    was blocked.
 3. Tell the user the result in plain words, order by order: the max loss at
@@ -117,7 +134,7 @@ not at the broker, a price too old to use, an early close today.
    each order to its verdict by fingerprint, so an edited order is not ready
    until it passes again, and a verdict from yesterday does not count today.
 
-## Example: the reel
+## Example: the reel (a past New York run, before the NSE switch)
 
 The TSLA bracket from trader-budget at 10:15 AM on Monday 2026-10-19, on a
 fresh $5,000 paper account with the example config:

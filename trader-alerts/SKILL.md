@@ -1,16 +1,18 @@
 ---
 name: trader-alerts
 description: >-
-  Price Alerts. Rings when a price, a stop or the opening bell hits. Turns
-  the trade plan into three alerts in one go (the stop, the target and "flat
-  by close" at your flat-by time), plus above / below / stop / target levels,
-  percent moves from the previous close, any time of day, and the NYSE
-  opening bell, each ringing once so you are not spammed. Knows NYSE hours
-  with the 2026 and 2027 holidays and 1:00 p.m. early closes, works out New
-  York time itself, fetches free delayed quotes (Yahoo chart JSON, Stooq
-  CSV) one ticker at a time, and writes trader/prices.json for sizing and the
-  risk check. Use when the user says "alert me when", "tell me if TSLA hits",
-  "watch my stop", "watch my trade", "remind me to close by 3:55", "is the
+  Price Alerts. Rings when a price, a stop, the opening bell or a new filing
+  hits. Turns the trade plan into four alerts in one go (the stop, the
+  target, "flat by close" at your flat-by time and the stock's new filings and
+  smart-money items from trader-news / trader-pelosi), plus above / below /
+  stop / target levels,
+  percent moves from the previous close, any time of day, and the NSE
+  opening bell, each ringing once so you are not spammed. Knows NSE hours
+  (9:15 a.m. to 3:30 p.m.) with the 2026 NSE holidays, works out India time
+  (IST) itself, reads live quotes from NSE's official MCP server, and writes
+  trader/prices.json for sizing and the risk check. Use when the user says
+  "alert me when", "tell me if RELIANCE hits", "alert me on any filing",
+  "watch my stop", "watch my trade", "remind me to close by 3:15", "is the
   market open", "when does the market open", "get me a price", or right
   after /trader-exit writes a plan.
 argument-hint: "[ticker] [price]"
@@ -27,12 +29,13 @@ user what happened and when it is time to be flat.
 `${CLAUDE_SKILL_DIR}` below is this skill's folder (where this SKILL.md lives).
 
 ```bash
-python3 "${CLAUDE_SKILL_DIR}/alerts.py" clock                          # NYSE open or closed, next open
-python3 "${CLAUDE_SKILL_DIR}/alerts.py" add --from-plan                # stop, target, flat by close from trader/plan.json
+python3 "${CLAUDE_SKILL_DIR}/alerts.py" clock                          # NSE open or closed, next open
+python3 "${CLAUDE_SKILL_DIR}/alerts.py" add --from-plan                # stop, target, flat by close, catalysts from trader/plan.json
+python3 "${CLAUDE_SKILL_DIR}/alerts.py" add --catalysts RELIANCE        # every new filing / smart-money item, once
 python3 "${CLAUDE_SKILL_DIR}/alerts.py" add --opening-bell
 python3 "${CLAUDE_SKILL_DIR}/alerts.py" add --symbol TSLA --stop 358.32
 python3 "${CLAUDE_SKILL_DIR}/alerts.py" add --symbol TSLA --target 370.04
-python3 "${CLAUDE_SKILL_DIR}/alerts.py" add --at 15:55 --label "flat by close" --before-close
+python3 "${CLAUDE_SKILL_DIR}/alerts.py" add --at 15:15 --label "flat by close"
 python3 "${CLAUDE_SKILL_DIR}/alerts.py" add --symbol KO --pct 3
 python3 "${CLAUDE_SKILL_DIR}/alerts.py" check                          # exit 0 = something rang
 python3 "${CLAUDE_SKILL_DIR}/alerts.py" quote TSLA --write             # -> trader/prices.json
@@ -41,7 +44,7 @@ python3 "${CLAUDE_SKILL_DIR}/alerts.py" list
 python3 "${CLAUDE_SKILL_DIR}/alerts.py" reset tsla-plan-stop
 ```
 
-`--now "2026-10-19 15:55"` pins the clock (New York time); `--offline DIR`
+`--now "2026-10-19 15:15"` pins the clock (India time, IST); `--offline DIR`
 reads saved quote files instead of the network.
 
 ## What it reads and writes
@@ -61,45 +64,57 @@ reads saved quote files instead of the network.
 | `above` / `target` | price at or above `price` | after `reset`, or on its own if `"rearm": true` and the price fell back |
 | `below` / `stop` | price at or below `price` | same |
 | `pct_move` | moved `pct` percent from the previous close (or `ref`), optional `direction` up or down | once per day at most |
-| `time` | the New York clock passed `at` ("15:55") on a trading day | once per trading day |
-| `opening_bell` | the NYSE is open | once per trading day |
+| `time` | the India (IST) clock passed `at` ("15:15") on a trading day | once per trading day |
+| `opening_bell` | the NSE is open | once per trading day |
+| `catalyst` | trader-news or trader-pelosi saved a new item on `symbol` (a filing, results, a band change, a deal, an insider trade...) | once per item |
 
-A rule with `"date"` is watched on that New York date only; `--from-plan`
-rules carry the plan's date, so yesterday's stop never rings today. A `time`
-rule with `"before_close": true` moves 3 hours earlier on a 1:00 p.m. early
-close, so "flat by close" at 15:55 rings at 12:55 on those days.
+A `catalyst` rule reads `trader/catalysts/` and `trader/smart_money/`, so run
+`/trader-news` and `/trader-pelosi` on the same schedule as `check` (a `/loop`
+or a scheduled task) for it to see anything new.
+
+A rule with `"date"` is watched on that India date only; `--from-plan`
+rules carry the plan's date, so yesterday's stop never rings today. A rule
+with `"until"` too is watched from `date` to `until`: a swing plan
+(`"mode": "swing"`) gets its stop and target from the entry day to its
+`exit_by`, an "overnight gap check" at 09:20 each morning after the entry
+(compare the open with the stop and re-place the stop: day orders expire),
+and a "swing exit day" alarm at 15:15 on `exit_by`, instead of the flat-by. A `time`
+rule with `"before_close": true` would move earlier with an early close; the
+NSE has none scheduled, so today it changes nothing.
 
 ## Quotes
 
-- `yahoo` (default): `query2.finance.yahoo.com/v8/finance/chart/<TICKER>`, an
-  unofficial free JSON endpoint, one request per ticker, half a second apart.
-  On a 429 it waits and tries once more; on a 429 or a 5xx after that it
-  tries `query1`. It identifies itself as `day-trader-skill/2.0`.
-- `stooq`: `stooq.com/q/l/?s=tsla.us&f=sd2t2ohlcv&h&e=csv`, Stooq's free CSV.
-  It answered 404 on 2026-10-13; the parser stays for when it is back.
-- Free quotes are unofficial, delayed and can lag. They are fine for alerts
-  and for checking a size, not for timing an order. The broker's price is the
-  one that fills. Each price in `trader/prices.json` keeps its quote time, and
-  trader-risk only uses one under 15 minutes old.
-- If both are down, read the price from the broker connector (Alpaca
-  `get_stock_snapshot`, IBKR `get_price_snapshot`) and write it into
-  `trader/prices.json` as `{"as_of": "...Z", "prices": {"TSLA": 366.48}}`.
+- Live quotes come from NSE's official CM Market Live MCP server
+  (`https://mcp.nseindia.in/cmmkt/mcp`, tool `cm_get_stock_quote`) through
+  `nse_data.py` and the `mcp` Python SDK: plain tool calls, no language model.
+  NSE answers in about 10 seconds a quote and takes them one at a time, so a
+  check of several stocks takes a while. Symbols are NSE's own (RELIANCE); a
+  `.NS` suffix is accepted.
+- A symbol NSE cannot serve (a timeout, a failure, an empty answer) goes to the
+  backup hook, `nse_data.fetch_backup_data()`: today the last quote cached in
+  `trader/cache/quotes.csv`, marked `"source": "cache"` and keeping its quote
+  time, so a stale price stays visibly stale.
+- Quotes are fine for alerts and for checking a size, not for timing an order.
+  The broker's price is the one that fills. trader-risk only uses a price under
+  15 minutes old.
 
-## The NYSE clock
+## The NSE clock
 
-Regular session 9:30 a.m. to 4:00 p.m. New York time, closed on weekends and
-on these holidays, from nyse.com/markets/hours-calendars (read 2026-10-13):
+Regular session 9:15 a.m. to 3:30 p.m. India time (IST), closed on weekends
+and on the NSE's equity-segment trading holidays
+(nseindia.com/resources/exchange-communication-holidays):
 
-- 2026: Jan 1, Jan 19, Feb 16, Apr 3 (Good Friday), May 25, Jun 19, Jul 3
-  (Independence Day observed), Sep 7, Nov 26, Dec 25. Early close 1:00 p.m. on
-  Nov 27 and Dec 24.
-- 2027: Jan 1, Jan 18, Feb 15, Mar 26 (Good Friday), May 31, Jun 18
-  (Juneteenth observed), Jul 5 (Independence Day observed), Sep 6, Nov 25,
-  Dec 24 (Christmas observed). Early close 1:00 p.m. on Nov 26.
+- 2026: Jan 15 (Maharashtra municipal elections), Jan 26 (Republic Day),
+  Mar 3 (Holi), Mar 26 (Ram Navami), Mar 31 (Mahavir Jayanti), Apr 3 (Good
+  Friday), Apr 14 (Ambedkar Jayanti), May 1 (Maharashtra Day), May 28 (Bakri
+  Id), Jun 26 (Muharram), Sep 14 (Ganesh Chaturthi), Oct 2 (Gandhi Jayanti),
+  Oct 20 (Dussehra), Nov 10 (Diwali Balipratipada), Nov 24 (Guru Nanak
+  Jayanti), Dec 25 (Christmas).
 
-Daylight saving time is worked out in the tool, so it needs no time zone
-files and ignores the computer's own zone. For any other year it says the
-holiday list is unknown.
+IST is UTC+5:30 all year (no daylight saving), worked out in the tool, so it
+needs no time zone files and ignores the computer's own zone. For any other
+year it says the holiday list is unknown. The Diwali Muhurat trading session
+is not modelled.
 
 ## Steps
 
@@ -115,7 +130,7 @@ holiday list is unknown.
    trader-broker `flatten`, then trader-risk, then the user's yes. Never act
    for them.
 
-## Example: the reel
+## Example: the reel (a past New York run, before the NSE switch)
 
 TSLA on Monday 2026-10-19: entry 364.18 at 10:15 AM, stop 358.32, target
 370.04, flat by 15:55. `add --from-plan` writes `tsla-plan-stop`,

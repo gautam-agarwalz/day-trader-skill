@@ -34,8 +34,8 @@ python3 "${CLAUDE_SKILL_DIR}/exit.py" plan --symbol TSLA --entry 364.18 --or-hig
 python3 "${CLAUDE_SKILL_DIR}/exit.py" show                          # the current trader/plan.json
 ```
 
-Other flags: `--flat-by 15:55`, `--json`, `--now "2026-10-19 10:15"` (New
-York time), `--entry PRICE` with a waiting entry.json to plan ahead, `--setup
+Other flags: `--flat-by 15:15`, `--json`, `--now "2026-10-19 10:15"` (India
+time, IST), `--entry PRICE` with a waiting entry.json to plan ahead, `--setup
 level`, `--offline FILE` (a saved Yahoo chart JSON for an ATR stop).
 
 ## What it reads and writes
@@ -43,7 +43,7 @@ level`, `--offline FILE` (a saved Yahoo chart JSON for an ATR stop).
 | file | what |
 | --- | --- |
 | `trader/entry.json` | the trigger from trader-entry: symbol, entry price, time, bar, opening range |
-| `trader/config.json` | `flat_by` (15:55) and `min_reward_risk` (1.0: a note here, trader-risk enforces it) |
+| `trader/config.json` | `flat_by` (15:15) and `min_reward_risk` (1.0: a note here, trader-risk enforces it) |
 | Yahoo chart API | only for an `atr:K` stop: the session's bars up to the entry bar, free and unofficial |
 | `trader/plan.json` | with `--write`: entry, stop and its rule, target and its R, risk a share, reward:risk, flat by. trader-timemachine, trader-budget and trader-alerts read it |
 
@@ -65,10 +65,24 @@ A level setup has no opening range to lean on, so it needs a stop you name.
 - **Refused, with the reason.** A stop at or above the entry. A target at or
   below it. A risk under 0.05% of the price: too tight to survive the
   spread, normal wiggle would stop you out. An entry.json that has not
-  triggered (unless you give `--entry`). A short: v2 plans longs only.
-- **Flat by.** 15:55 by default (or `flat_by` in the config). Out by then,
-  win or lose, no overnight hold. On a 1:00 p.m. early close it moves up to
-  12:55. An entry at or after the flat-by time is refused.
+  triggered (unless you give `--entry`). An overnight cash short: in India a cash short is covered the same day, so an
+  overnight short is a stock future (`--instrument futures --lot N`).
+- **Shorts** (`--side short`): a short's stop goes above the entry (rounded
+  up, away from it) and the target below: `or-mid` or `or-high` for an
+  opening-range short, or `price:`, `pct:`, `atr:`. Shorts are off until the
+  config says `"allow_short": true`; `/trader-risk` checks it.
+- **Flat by.** 15:15 by default (or `flat_by` in the config). Out by then,
+  win or lose, no overnight hold. On an early close it moves up with the
+  close (the NSE has none scheduled). An entry at or after the flat-by time is refused.
+- **Swing mode** (`--mode swing`): an overnight or multi-day hold, such as an
+  event idea from `/trader-timemachine`'s `events.py` (buy before the close
+  for the next morning's gap). No flat-by: `--exit-by YYYY-MM-DD` or `--hold N`
+  (sessions after the entry day, holidays skipped, default 1) sets the last
+  session, and `--gap-risk PCT` (the event study's worst-5 % loss) is saved so
+  `/trader-budget` sizes on the gap, not only the stop. Say every time that an
+  overnight gap can open past the stop. `/trader-risk` blocks a swing plan
+  until `"swing": {"allow_overnight": true}` is in the config.
+  `events.py plan N --write` builds the same plan straight from idea N.
 
 ## Steps
 
@@ -81,12 +95,16 @@ A level setup has no opening range to lean on, so it needs a stop you name.
 4. If it refuses, say the reason and the fix (a wider stop, a farther
    target). Never loosen anything on your own.
 5. Say once that the stop is a plan, not a guarantee.
+6. Read out any "Catalyst" note: the plan's warnings carry what `/trader-news`
+   and `/trader-pelosi` saved on the stock (results due tonight: a gap can jump
+   the stop; a band cut to 5 %: the stock can lock at its circuit). Warnings
+   only: the plan is not changed.
 6. Hand off to `/trader-timemachine` to replay the plan, then `/trader-budget`
    to size it to the max loss per trade. Offer `/trader-alerts` for the stop,
    the target and the flat-by time. Claude can keep `entry.py watch` running
    in the background or on a `/loop` until a setup triggers, then come here.
 
-## Example: the reel
+## Example: the reel (a past New York run, before the NSE switch)
 
 TSLA, Monday 2026-10-19. The entry is 364.18 at 10:15 AM (the 10:10 bar,
 bar 8) and the opening range is 354.47 to 362.18. `exit.py plan --stop
@@ -113,7 +131,9 @@ sizes it: a $50 max loss per trade buys floor(50 / 5.86) = 8 shares.
   never prints a P&L or a return.
 - Nothing here promises winning trades or money. A 1R target is not a
   prediction that the price gets there.
-- Long side only. v2 plans longs only.
+- Longs by default. A short (`--side short`) is intraday in cash (covered by
+  the flat-by) or overnight in stock futures only, and only with
+  `"allow_short": true` in the config.
 
 ## What it never does
 

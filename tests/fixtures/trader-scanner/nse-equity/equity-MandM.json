@@ -1,0 +1,45 @@
+{
+ "segment": "EQUITY",
+ "updatedAt": "2026-11-21T17:55:11.597862099Z",
+ "returned": 2,
+ "stocks": [
+  {
+   "type": "CM",
+   "symbol": "M&M",
+   "series": "EQ",
+   "openPrice": 3487.9,
+   "highPrice": 3570.0,
+   "lowPrice": 3479.2,
+   "preClosePrice": 3509.0,
+   "lastTradedPrice": 3545.0,
+   "indicativeClosePrice": 0.0,
+   "change": 36.0,
+   "perChange": 1.03,
+   "volume": 3534774,
+   "value": 1247.577274656,
+   "fiftyTwoWeekHigh": 3839.9,
+   "fiftyTwoWeekLow": 2744.3,
+   "perChange30d": 21.95,
+   "latestTimestamp": "2026-11-20 16:00:28"
+  },
+  {
+   "type": "CM",
+   "symbol": "M&MFIN",
+   "series": "EQ",
+   "openPrice": 281.25,
+   "highPrice": 289.3,
+   "lowPrice": 277.25,
+   "preClosePrice": 283.25,
+   "lastTradedPrice": 288.15,
+   "indicativeClosePrice": 0.0,
+   "change": 4.9,
+   "perChange": 1.73,
+   "volume": 1862764,
+   "value": 52.792594524,
+   "fiftyTwoWeekHigh": 415.0,
+   "fiftyTwoWeekLow": 253.4,
+   "perChange30d": -5.49,
+   "latestTimestamp": "2026-11-20 16:00:28"
+  }
+ ]
+}

@@ -1,17 +1,22 @@
 ---
 name: trader-scanner
 description: >-
-  Chart Scanner. Scans thousands of charts for setups: opening-range
-  breakouts, flags, oversold bounces. Builds the list of US-listed common
-  stocks, ordinary shares and ADRs from Nasdaq Trader's symbol directories,
-  runs a pre-market scan of daily closes (20-day closing-high breakout, bull
-  flag, reclaimed the 20-day average, oversold, oversold bounce) and an
-  intraday opening-range breakout scan on 5-minute bars, then writes
-  trader/watchlist.json for trader-news and trader-entry. Free Yahoo data,
-  bar by bar. Use when the user says "scan the market", "find me setups",
+  Chart Scanner for NSE. Scans thousands of Indian charts for setups:
+  opening-range breakouts, flags, oversold bounces. Builds the universe of
+  every NSE equity (series EQ) from NSE's official MCP server, runs a
+  pre-market scan of NSE daily bars (20-day closing-high breakout, bull flag,
+  reclaimed the 20-day average, oversold, oversold bounce) and an intraday
+  opening-range breakout scan on 5-minute bars, marks each hit with its
+  filings and smart-money flags from trader-news and trader-pelosi, then
+  writes trader/watchlist.json for trader-news and trader-entry. Use when the user says "scan the market", "find me setups",
   "what is breaking out", "opening range breakouts", "scan for bull flags",
   "oversold stocks", "pre-market scan", "build my watchlist", "what should I
-  look at today", or at the start of a trading day before /trader-news.
+  look at today", or at the start of a trading day before /trader-news. Also
+  runs the global macro engine (gold, war, crude, US tariffs / China+1, Fed,
+  metals; 3 legitimacy gates; long / short / caution lists) and the
+  multi-timeframe order block scanner (sweep / absorption confirmation, VWAP,
+  anti-trap time and extension guards): use for "macro", "gold surge",
+  "crude spike", "war stocks", "order blocks", "smart money entry", "FVG".
 argument-hint: "[universe | daily | orb] [--at HH:MM]"
 ---
 
@@ -29,16 +34,16 @@ the scanner does not change that. It only saves you from flipping through
 ```bash
 python3 "${CLAUDE_SKILL_DIR}/scan.py" universe                       # -> trader/universe.txt
 python3 "${CLAUDE_SKILL_DIR}/scan.py" daily                          # before the open -> trader/watchlist.json
-python3 "${CLAUDE_SKILL_DIR}/scan.py" daily --symbols TSLA,NVDA,AMD  # or --watchlist FILE, --limit 200
-python3 "${CLAUDE_SKILL_DIR}/scan.py" orb                            # after 9:50 AM ET -> trader/watchlist.json
-python3 "${CLAUDE_SKILL_DIR}/scan.py" orb --at 10:15                 # cut the clock at 10:15 AM ET
+python3 "${CLAUDE_SKILL_DIR}/scan.py" daily --symbols RELIANCE,TCS,INFY  # or --watchlist FILE, --limit 200
+python3 "${CLAUDE_SKILL_DIR}/scan.py" orb                            # after 9:35 AM IST -> trader/watchlist.json
+python3 "${CLAUDE_SKILL_DIR}/scan.py" orb --at 10:15                 # cut the clock at 10:15 AM IST
 python3 "${CLAUDE_SKILL_DIR}/scan.py" orb --watchlist trader/watchlist.json --json
 ```
 
 Flags: `--min-price 5` and `--min-volume` (daily 1,000,000, orb 0),
 `--or-minutes 15`, `--max-confirm 200` (orb stage 2),
-`--now "2026-10-19 10:15"` (New York time) to pin the clock, `--offline PATH`
-to read saved Yahoo files, `--no-write`, `--show N`, `--json`. Exit code 0
+`--now "2026-10-19 10:15"` (India time, IST) to pin the clock, `--offline PATH`
+to read saved files, `--no-write`, `--show N`, `--json`. Exit code 0
 when the scan found something, 1 when it found nothing or could not run (the
 reason is one plain line).
 
@@ -46,46 +51,31 @@ reason is one plain line).
 
 | file | what |
 | --- | --- |
-| `trader/universe.txt` | written by `universe`: one `SYMBOL\|Name` a line, read by `daily` and `orb` |
+| `trader/universe.txt` | written by `universe` (or the first `daily` / `orb` run): one NSE symbol a line, no `.NS` |
 | `trader/watchlist.json` | written by `daily` and `orb`: `mode`, `as_of`, `universe`, `scanned`, `failed`, `hits[]`. trader-news and trader-entry read `hits[].symbol` |
-| `trader/config.json` | read by `orb`: `no_entries_after` (default 15:30) |
+| `trader/config.json` | read by `orb`: `no_entries_after` (default 14:50) |
+| `trader/catalysts/`, `trader/smart_money/` | read: each hit gets its filings, smart-money items and flags (`catalysts`, `smart_money`, `flags` in the watchlist) |
 
 ## The universe
 
-`universe` downloads `nasdaqlisted.txt` and `otherlisted.txt` from
-nasdaqtrader.com/dynamic/SymDir and keeps a row when, in this order:
-
-1. It is not a test issue, not an ETF, not NextShares.
-2. It is a plain ticker: 1 to 5 letters, or 1 to 4 letters plus one class
-   letter after a dot (BRK.B). A `$` preferred (ABR$D) is out, and so is a
-   `.U`, `.W` or `.R` suffix (units, warrants, rights).
-3. Out, whatever else the name says: warrants; SPAC units and rights ("Units,
-   each consisting of", "Rights to receive"); notes, ETNs, debentures; a %
-   coupon; "Depositary Shares" that are not American or Global (those carry a
-   preferred).
-4. In: the name calls it common stock, common shares or units, ordinary
-   shares, shares of beneficial interest, ADS / ADR / American or Global
-   depositary shares, or partnership or trust units.
-5. Out: the name still says unit, right, bond, preferred or preference.
-6. In: everything else (plain names like "AMETEK, Inc.").
-
-On the Oct 19 2026 files this keeps 5,943. The reel said 5,259: that count
-came from an ad hoc filter (names that say common or ordinary, no ADRs). All
-5,259 of those are in this list; the 684 extra are mostly ADRs, closed-end
-funds and partnership units. The Oct 20 files gave 5,942.
+`universe` reads every NSE capital-market equity in series EQ from NSE's CM
+Market Live MCP server (`cm_get_equity_stocks`, paged by symbol prefix, 30 to
+60 seconds a page on NSE's side, so a few minutes in all). On 2026-11-21 that
+was 2,967 symbols. ETFs listed in series EQ (names like NV20BEES) are in it.
+`daily` and `orb` build it on their first run when there is no universe file.
 
 ## The daily scan (before the open)
 
-Yahoo's spark endpoint returns closes for 20 symbols a request, so 5,942
-symbols take 298 requests. On Oct 20 2026 that took 145 seconds with the
-polite pause (0.3 s). Liquidity comes from the spark meta: last price at
-least `--min-price` and last session's volume at least `--min-volume`. Run it
-before the open or after the close: during the session the volume is the
-day's so far, and today's daily bar is left out until 4:00 PM.
+Three months of NSE daily bars per symbol from NSE's CM Bhavcopy MCP server
+(`get_stock_history`), about 20 symbols in 2.5 seconds. Liquidity from the
+last session: close at least `--min-price` and volume at least
+`--min-volume`. A symbol NSE cannot serve (a timeout, a failure, an empty
+answer) goes to the backup hook (`nse_data.fetch_backup_data()`, the local
+cache in `trader/cache/`) and the printout says which. Today's daily bar is
+left out until 3:30 PM.
 
-The setups are computed from daily closes only (spark has no highs or lows),
-so they are close cousins of the reel's `refs/scan.py`, which used highs and
-lows:
+The setups are computed from daily closes only, as in the reel's `refs/scan.py`
+cousin rules:
 
 | setup | the rule on closes |
 | --- | --- |
@@ -101,8 +91,8 @@ listed most traded first (price times volume).
 
 ## The opening-range breakout scan (during the session)
 
-The opening range is the first `--or-minutes` (15) of the session: the 9:30,
-9:35 and 9:40 five-minute bars. A hit is the first completed 5-minute bar
+The opening range is the first `--or-minutes` (15) of the session: the 9:15,
+9:20 and 9:25 five-minute bars. A hit is the first completed 5-minute bar
 to CLOSE above the range high, at that bar's close time.
 
 1. Stage 1, every symbol: spark closes of today's 5-minute bars, 20 a
@@ -123,35 +113,42 @@ spark requests, then 200 v8 charts): 2,448 usable charts, 1,782 candidates,
 the 200 most traded checked, 119 of those broke out. For a fast answer, scan
 the daily watchlist or a list of names you trade (`--watchlist`, `--symbols`).
 
-A chart is usable only when every 5-minute bar from 9:30 to the cutoff is
+A chart is usable only when every 5-minute bar from 9:15 to the cutoff is
 there; a missing bar means a halt or a thin stock. Null closes are dropped,
 a bar off the 5-minute grid (the live tick, like 10:58:07) is dropped, and a
-bar counts only once it is complete (start + 5 minutes). Before 9:50 AM, on a
-weekend or holiday, after the close, or after `no_entries_after` (an expired
-setup) it prints one plain line and writes nothing. The 1:00 PM early closes
-are in the calendar.
+bar counts only once it is complete (start + 5 minutes). Before 9:35 AM IST, on a
+weekend or NSE holiday, after the close, or after `no_entries_after` (an
+expired setup) it prints one plain line and writes nothing.
 
 ## Data and limits
 
-- Yahoo's chart and spark endpoints are free, unofficial and can lag. Bars are
-  5-minute bars, bar by bar, never tick by tick. query2 first, query1 on a 429
-  or 5xx, one retry after a 5-second wait on a 429.
-- Partial results are said as partial: "Fetched 4,980 of 5,259 charts (279
+- Daily bars, quotes and the universe come from NSE's official MCP servers.
+  NSE has no intraday bars, so the opening-range scan reads Yahoo's free
+  5-minute chart and spark endpoints (a bare NSE symbol is sent as
+  `RELIANCE.NS`); they are unofficial and can lag. query2 first, query1 on a
+  429 or 5xx, one retry after a 5-second wait on a 429.
+- Partial results are said as partial: "Fetched 2,880 of 2,967 charts (87
   failed or had no data)". Never round a partial scan up to "the whole market".
-- NYSE holidays and early closes for 2026 and 2027 (nyse.com, read 2026-10-13).
+- The NSE session (9:15 a.m. to 3:30 p.m. IST) and the 2026 NSE trading
+  holidays.
+- **Catalysts.** When `/trader-news` and `/trader-pelosi` have run, every hit
+  is marked with what they found (results due, a band cut, ASM, a block deal,
+  promoter buying or selling) and the printout lists them under the hits.
+  Warnings only: a catalyst never removes a hit.
 
 ## Steps
 
 1. Once a week or so: `scan.py universe`.
 2. Before the open: `scan.py daily`. Tell the user the counts (fetched,
    liquid, scanned, hits) and the top few by setup.
-3. After 9:50 AM ET (10:15 is the classic): `scan.py orb`. Tell the user how
+3. After 9:35 AM IST (10:00 is the classic): `scan.py orb`. Tell the user how
    many usable charts broke their range and when, and that a later hit is
    closer to the price now.
-4. The user picks one chart. Hand it on: `/trader-news TICKER` (what is moving
-   it), then `/trader-entry TICKER` (the entry bar by bar). Never pick for them.
+4. The user picks one chart. Hand it on: `/trader-news --mine` (its filings),
+   `/trader-pelosi` (smart money), `/trader-analyst SYMBOL` (its last results),
+   then `/trader-entry SYMBOL` (the entry bar by bar). Never pick for them.
 
-## Example: the reel
+## Example: the reel (a past New York run, before the NSE switch)
 
 Monday Oct 19 2026, scan at 10:15 AM over the reel's 234-ticker wall
 (`tests/fixtures/trader-scanner/wall5m-2026-10-19.json.gz`, real Yahoo charts):
@@ -185,6 +182,90 @@ oversold bounce).
 - Say "matched a rule", never "a buy", "a winner" or "a good trade".
 - Never print a P&L, a return or a profit figure.
 - A hit is stale once the price has moved on. Re-run before acting on it.
+
+## Market regime (regime.py)
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/regime.py"          # -> trader/regime/latest.json (before the open, after 15:30)
+```
+
+Five NSE inputs, each -1 / 0 / +1: India VIX (its 1-year percentile and 1-week change, from NSE's market
+mood), breadth (the share of stocks that rose), the Nifty 50 trend (against its 20- and 50-day averages),
+FII index-futures positioning (long share of contracts in NSE's participant-wise OI file) and FII / DII
+cash flows. Score +2 or more is risk-on, -2 or less risk-off, otherwise neutral; VIX at its 80th
+percentile or more says halve the size. The brief shows it on every setup that fights it. A description
+of today, never a block and never a forecast.
+
+## Angel One SmartAPI (optional, angel_one.py)
+
+With `ANGEL_API_KEY`, `ANGEL_CLIENT_CODE`, `ANGEL_PIN` and `ANGEL_TOTP_SECRET` set in the environment,
+the order block scanner, the macro engine's gate 3 and the Time Machine take NSE 5-minute, hourly and daily
+candles from Angel One SmartAPI (about 90 days of 5-minute history) and fall back to Yahoo; NSE's MCP
+servers fall back to it for quotes and daily bars before the local cache. `TRADER_INTRADAY=yahoo` turns it
+off, `angel` makes it the only source. Data only: the module has no order functions. The opening-range
+scan (`scan.py orb`) keeps Yahoo's batch spark quotes for the whole universe.
+
+## Global macro engine (global_macro_engine.py)
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/global_macro_engine.py"               # -> trader/macro/latest.json
+python3 "${CLAUDE_SKILL_DIR}/global_macro_engine.py" --themes gold,crude --hours 6
+```
+
+Headlines from the GDELT 2.0 DOC API (`gdeltdoc`, or the plain API URL), the
+RSS feeds in `macro_map.json` (ET, Moneycontrol, LiveMint, RBI, the Fed, PIB)
+and a Google News search per theme, plus company events from
+`trader/orders` and `trader/catalysts`. Themes: gold, war / geopolitics,
+crude, US tariffs / China+1, the Fed, global metals; copy `macro_map.json` to
+`trader/macro_map.json` to change keywords, proxies, thresholds and the stock
+lists. The defaults (gold up: long MUTHOOTFIN / MANAPPURAM / TITAN; war or
+crude up: long HAL / BEL / MAZDOCK / ONGC, short INDIGO / ASIANPAINT / BPCL /
+HPCL; the reverse move flips them) are examples, not findings.
+
+The 3 gates, each with its evidence in the output:
+1. Source: a tier-1 domain (exchange, government, central bank) or an
+   exchange filing, OR 2 different outlets on the same theme and direction
+   within 15 minutes.
+2. Size: a proxy past its threshold the expected way (gold GC=F 1.5 %, crude
+   CL=F 3 %, copper HG=F 2.5 % ...), or an order >= 5 % of market cap, or
+   profit / revenue >= 20 % on last year.
+3. Market: 5 to 15 minutes after the news, a 5-minute bar with >= 2.0x the
+   volume of the same clock slot on the last 20 sessions (opening bars are
+   always heavy, so they are compared with other opens), price moving the
+   expected way. Pending before 5
+   minutes, dropped after 15; news outside hours starts at the next 9:15.
+   Volume is not proof that an institution traded.
+
+Lists: `[ACTIONABLE LONG]`, `[ACTIONABLE SHORT]`, `[CAUTION / BLOCK ENTRY]`.
+Routing is equity first: `[EQUITY INTRADAY LONG]` or `[EQUITY SWING LONG: 2-3+
+DAYS]`; every cash short is `[EQUITY INTRADAY SHORT - AUTO SQUARE-OFF 3:15
+PM]` (SEBI: cash shorts are squared off the same day), and `[SECONDARY F&O
+SWING SHORT OPTION]` is added only for an F&O stock out of the ban period in a
+multi-day downtrend.
+
+## Order block scanner (order_block_scanner.py)
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/order_block_scanner.py"                        # symbols from orders, macro, watchlist
+python3 "${CLAUDE_SKILL_DIR}/order_block_scanner.py" --symbols KEC,HAL --tf 5m,15m,60m,1d --all
+```
+
+An order block is the last opposite-coloured candle before an impulse of 2x
+ATR(14) or more, within 3 candles, that closes beyond the last swing high /
+low (break of structure) and leaves a 3-candle fair value gap. Zone = that
+candle's range, 50 % mean threshold, unmitigated until first revisited. On
+5-min, 15-min (resampled) and 1-hour bars from Yahoo, daily from NSE. An entry
+needs, on the first revisit: a liquidity sweep and reclaim (a wick beyond the
+zone or the swing level closing back inside, volume >= 1.8x) OR an absorption
+candle (volume >= 1.8x, narrow body or long wick, close inside the zone in the
+top / bottom 30 %); the close on the right side of the session VWAP (intraday)
+or the VWAP anchored on the event date (swing); F&O open interest from NSE's
+daily F&O bhavcopy as a note only. Anti-trap guards: no intraday entries
+09:15-09:30 or 11:45-13:30 or after 14:50, none when the price is more than
+1.5x the 14-day ATR from the previous close (intraday) or the anchored VWAP
+(swing). Writes `trader/orderblocks/latest.json` with the zone, the 50 %
+entry, the stop beyond the far edge, targets and the guards; the brief in
+trader-timemachine simulates every setup.
 
 ## What it never does
 

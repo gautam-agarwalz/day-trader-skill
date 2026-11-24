@@ -1,0 +1,18 @@
+{
+ "updatedAt": "2026-10-13T10:17:26Z",
+ "stock": {
+  "type": "CM",
+  "symbol": "AXP",
+  "series": "EQ",
+  "openPrice": 313.8599853515625,
+  "highPrice": 314.0,
+  "lowPrice": 308.075,
+  "preClosePrice": 311.53,
+  "lastTradedPrice": 309.84,
+  "indicativeClosePrice": 0.0,
+  "change": -1.69,
+  "perChange": -0.54,
+  "volume": 3156184,
+  "latestTimestamp": "2026-10-13 15:47:26"
+ }
+}

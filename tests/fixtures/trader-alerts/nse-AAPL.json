@@ -1,0 +1,18 @@
+{
+ "updatedAt": "2026-10-13T10:15:01Z",
+ "stock": {
+  "type": "CM",
+  "symbol": "AAPL",
+  "series": "EQ",
+  "openPrice": 344.6700134277344,
+  "highPrice": 348.15,
+  "lowPrice": 340.74,
+  "preClosePrice": 340.97,
+  "lastTradedPrice": 341.27,
+  "indicativeClosePrice": 0.0,
+  "change": 0.3,
+  "perChange": 0.09,
+  "volume": 38897865,
+  "latestTimestamp": "2026-10-13 15:45:01"
+ }
+}

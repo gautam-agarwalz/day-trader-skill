@@ -1,199 +1,250 @@
-import datetime
+"""trader-pelosi: the Indian smart money & institutional tracker.
+
+Fixtures in tests/fixtures/trader-pelosi/ are real answers recorded from NSE on 2026-11-23
+(trimmed: pledge data to 80 companies, the shareholding master to 150 rows, the delivery file to
+the day's deal symbols). The AMFI workbooks are SYNTHETIC, built in the test in the SEBI format:
+real fund-house files live on each AMC's own site.
+"""
+
+import copy
+import gzip
 import io
 import json
 import os
+import shutil
 import tempfile
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import redirect_stdout, redirect_stderr
 
-from _load import FIX, load
+from _load import load, FIX
 
-ptr = load("trader-pelosi", "ptr")
+sm = load("trader-pelosi", "smartmoney")
+ih = sm.ih
 DIR = os.path.join(FIX, "trader-pelosi")
-ZIP = os.path.join(DIR, "2026FD.zip")
+NOW = "2026-11-23 21:30"
 
 
-def text(name):
-    with open(os.path.join(DIR, name), encoding="utf-8") as fh:
+def fixture(name):
+    path = os.path.join(DIR, name)
+    if os.path.exists(path + ".gz"):
+        with gzip.open(path + ".gz", "rt", encoding="utf-8") as fh:
+            return fh.read()
+    with open(path, encoding="utf-8") as fh:
         return fh.read()
 
 
-def run(args):
+def run(argv):
     out, err = io.StringIO(), io.StringIO()
     with redirect_stdout(out), redirect_stderr(err):
-        code = ptr.main(args)
+        code = sm.main(argv)
     return code, out.getvalue(), err.getvalue()
 
 
-class Index(unittest.TestCase):
+class Deals(unittest.TestCase):
     def setUp(self):
-        self.rows = ptr.load_index(2026, offline=ZIP)
+        self.doc = json.loads(fixture("nse_largedeal.json"))
+        text = fixture("sec_bhavdata_full_23112026.csv")
+        c = ih.Client(offline=DIR)
+        self.deliv = sm.delivery_map(c, __import__("datetime").date(2026, 11, 23))
+        self.assertIn("LENSKART", self.deliv)
+        self.assertTrue(text.startswith("SYMBOL"))
 
-    def test_finds_her_four_2026_ptrs(self):
-        hers = ptr.select(self.rows, ["pelosi"])
-        self.assertEqual([r["doc_id"] for r in hers],
-                         ["20035553", "20035143", "20034836", "20033725"])
-        self.assertEqual([r["filed"] for r in hers],
-                         ["2026-10-02", "2026-08-21", "2026-06-23", "2026-01-23"])
-        self.assertEqual(hers[1]["url"],
-                         "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/20035143.pdf")
-        self.assertEqual(hers[0]["district"], "CA11")
-        self.assertEqual(hers[0]["name"], "Hon. Nancy Pelosi")
+    def test_round_trips_are_intraday_noise(self):
+        items, counts = sm.classify_deals(self.doc, self.deliv)
+        self.assertEqual(counts["deals"], 94)
+        self.assertEqual(counts["round_trip"], 72)          # bought and sold the same stock the same day
+        self.assertEqual(counts["kept"], 16)
+        self.assertFalse(any("MICROCURVES" in i["title"] for i in items))
 
-    def test_member_names_in_any_order(self):
-        for m in ("pelosi", "Nancy Pelosi", "Pelosi, Nancy", "PELOSI"):
-            self.assertEqual(len(ptr.select(self.rows, [m])), 4, m)
-        self.assertEqual(ptr.select(self.rows, ["Paul Pelosi"]), [])
-        both = ptr.select(self.rows, ["pelosi", "gottheimer"])
-        self.assertEqual(len(both), 5)
+    def test_block_deals_and_institutions_are_highlighted(self):
+        items, _ = sm.classify_deals(self.doc, self.deliv)
+        sg = [i for i in items if i["title"].startswith("SOCIETE GENERALE - ODI bought")][0]
+        self.assertTrue(sg["highlight"])
+        self.assertEqual((sg["symbol"], sg["value_cr"]), ("LENSKART", 447.79))
+        self.assertIn("institution", sg["flags"])
+        self.assertIn("delivery 58.4% of the day's volume", sg["detail"])
+        self.assertEqual(sum(i["highlight"] for i in items), 7)
 
-    def test_only_ptrs_unless_asked(self):
-        ptrs = ptr.select(self.rows)
-        self.assertTrue(all(r["type"] == "P" for r in ptrs))
-        everything = ptr.select(self.rows, kind=None)
-        self.assertGreater(len(everything), len(ptrs))
-        other = next(r for r in everything if r["type"] == "C")
-        self.assertIn("/financial-pdfs/2026/", other["url"])
-
-    def test_since_and_newest_first(self):
-        recent = ptr.select(self.rows, since="2026-10-07")
-        self.assertEqual({r["filed"] for r in recent} <= {"2026-10-07", "2026-10-12"}, True)
-        self.assertEqual(recent[0]["filed"], "2026-10-12")
-        self.assertIn("Salazar", [r["last"] for r in recent])
-
-    def test_reads_the_xml_inside_or_alone(self):
-        import zipfile
-        with zipfile.ZipFile(ZIP) as z:
-            raw = z.read("2026FD.xml")
-        self.assertTrue(raw.startswith(b"\xef\xbb\xbf"))  # the Clerk's file has a BOM
-        self.assertEqual(len(ptr.parse_index(ptr.read_index_bytes(raw), 2026)), len(self.rows))
-        with self.assertRaises(ptr.PtrError):
-            ptr.parse_index(b"not xml", 2026)
+    def test_a_trading_desk_on_a_low_delivery_day_is_dropped(self):
+        doc = {"BULK_DEALS_DATA": [{"symbol": "XYZ", "clientName": "ACME STOCK BROKING PVT LTD", "buySell": "BUY",
+                                    "qty": "500000", "watp": "100", "date": "23-Nov-2026"}]}
+        self.assertEqual(sm.classify_deals(doc, {"XYZ": 12.0})[1]["desk_low_delivery"], 1)
+        items, _ = sm.classify_deals(doc, {"XYZ": 75.0})
+        self.assertEqual(len(items), 1)
+        self.assertIn("high delivery", items[0]["flags"])
+        self.assertTrue(items[0]["highlight"])                 # Rs 5 cr at 75 % delivery
 
 
-class NewSinceLastCheck(unittest.TestCase):
-    def test_alerts_once(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            state = os.path.join(tmp, "state", "pelosi.json")
-            base = ["new", "--member", "pelosi", "--offline", ZIP, "--year", "2026",
-                    "--state", state, "--portfolio", os.path.join(tmp, "none.json")]
-            code, out, _ = run(base + ["--today", "2026-10-13"])
-            self.assertEqual(code, 0)
-            # first run: the last 45 days only
-            self.assertIn("doc 20035553", out)
-            self.assertNotIn("doc 20035143", out)
-            with open(state) as fh:
-                saved = json.load(fh)
-            self.assertEqual(saved["seen"], ["20033725", "20034836", "20035143", "20035553"])
-            code, out, _ = run(base + ["--today", "2026-10-13"])
-            self.assertEqual(code, 1)
-            self.assertIn("Nothing new", out)
+class Insider(unittest.TestCase):
+    def test_the_xbrl_is_read_per_person(self):
+        recs = sm.parse_insider_xbrl(fixture("IT_1197873_1662973_02052026044642_WEB.xml"))
+        self.assertEqual(len(recs), 1)
+        r = recs[0]
+        self.assertEqual((r["symbol"], r["person"], r["category"], r["type"], r["mode"]),
+                         ("RELTD", "Shantanu Lath", "Director", "Buy", "ESOP"))
+        self.assertEqual((r["qty"], r["before_pct"], r["after_pct"]), ("70000", 0.03, 0.07))
+        it = sm.insider_item(r, "x", "y")
+        self.assertFalse(it["highlight"])                     # an ESOP allotment, not an open-market buy
 
-    def test_a_new_doc_id_is_new(self):
-        rows = ptr.select(ptr.load_index(2026, offline=ZIP), ["pelosi"])
-        state = {"seen": ["20033725", "20034836", "20035553"], "last_check": "2026-08-01T09:00:00"}
-        fresh = ptr.new_since(rows, state, datetime.date(2026, 10, 13))
-        self.assertEqual([r["doc_id"] for r in fresh], ["20035143"])
+    def test_promoter_open_market_buys_are_highlighted(self):
+        rec = {"symbol": "ABC", "person": "P", "category": "Promoter Group", "type": "Buy",
+               "mode": "Market Purchase", "qty": "1000", "value": "5000000", "date": "2026-11-20"}
+        self.assertTrue(sm.insider_item(rec, "x", "y")["highlight"])
+        self.assertFalse(sm.insider_item(dict(rec, type="Sell"), "x", "y")["highlight"])
+        self.assertFalse(sm.insider_item(dict(rec, category="Employees/Designated Employees"), "x", "y")["highlight"])
 
-    def test_dry_run_keeps_state(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            state = os.path.join(tmp, "pelosi.json")
-            run(["new", "--offline", ZIP, "--state", state, "--today", "2026-10-13",
-                 "--dry-run", "--portfolio", os.path.join(tmp, "none.json")])
-            self.assertFalse(os.path.exists(state))
+    def test_html_escapes_are_undone(self):
+        names = []
+        for f in os.listdir(DIR):
+            if f.startswith("IT_"):
+                names += [r["person"] for r in sm.parse_insider_xbrl(fixture(f))]
+        self.assertIn("Bajaj Holdings & Investment Limited", names)
 
 
-class ParseReport(unittest.TestCase):
-    def test_the_reel_alert_bloom_energy_calls(self):
-        rep = ptr.parse_ptr_text(text("ptr-20035143.txt"))
-        self.assertEqual(rep["name"], "Hon. Nancy Pelosi")
-        self.assertEqual(rep["status"], "Member")
-        self.assertEqual(rep["district"], "CA11")
-        self.assertEqual(rep["doc_id"], "20035143")
-        self.assertEqual(rep["filed"], "2026-08-21")
-        self.assertEqual(len(rep["rows"]), 7)
-        calls = [r for r in rep["rows"] if r["ticker"] == "BE" and r["asset_type"] == "OP"]
-        self.assertEqual(len(calls), 2)
-        big = calls[0]
-        self.assertEqual(big["owner"], "SP")
-        self.assertEqual(big["owner_name"], "spouse")
-        self.assertEqual(big["type"], "P")
-        self.assertEqual(big["date"], "2026-07-24")
-        self.assertEqual(big["notified"], "2026-07-24")
-        self.assertEqual(big["amount"], "$1,000,001 - $5,000,000")
-        self.assertEqual((big["amount_low"], big["amount_high"]), (1000001, 5000000))
-        self.assertEqual(big["option"], {"contracts": 100, "kind": "call", "strike": 100.0,
-                                         "expires": "2027-06-17", "exercised": False})
-        self.assertEqual(big["days_to_disclose"], 28)
-        self.assertFalse(big["late"])
-        self.assertEqual(big["asset"], "Bloom Energy Corporation Class A Common Stock")
-        shares = [r for r in rep["rows"] if r["ticker"] == "BE" and r["asset_type"] == "ST"]
-        self.assertEqual([r["shares"] for r in shares], [10000, 5000])
-        llc = rep["rows"][-1]
-        self.assertIsNone(llc["ticker"])
-        self.assertEqual(llc["asset_type"], "AB")
-        self.assertIn("luxury hotel", llc["description"])
+class SastPledgeShareholding(unittest.TestCase):
+    def test_sast_highlights_market_moves_only(self):
+        items = sm.sast_items(json.loads(fixture("nse_sast.json")))
+        self.assertEqual(len(items), 121)
+        self.assertEqual(sum(i["highlight"] for i in items), 27)
+        swiggy = [i for i in items if i["symbol"] == "SWIGGY"][0]
+        self.assertIn("crossed 5%", swiggy["flags"])             # 4.99 % -> 5.17 %
+        self.assertTrue(swiggy["highlight"])
+        self.assertTrue(all("open market" in i["flags"] for i in items if i["highlight"]))
 
-    def test_render_says_public_and_flags_your_stocks(self):
-        rep = ptr.parse_ptr_text(text("ptr-20035143.txt"))
-        out = ptr.render_report(rep, watch={"INTC"})
-        self.assertIn("100 call options, $100 strike, expires 2027-06-17", out)
-        self.assertIn("INTC is on your list", out)
-        self.assertIn("Not inside information", out)
-        self.assertIn("45 days", out)
-        self.assertNotIn(chr(0x2014), out)
+    def test_pledge_changes_against_the_last_run(self):
+        cur = sm.pledge_snapshot(json.loads(fixture("nse_pledge.json")))
+        self.assertEqual(sm.pledge_changes(None, cur), [])     # the first run is the baseline
+        prev = copy.deepcopy(cur)
+        name = sorted(n for n, v in cur.items() if v["num"] > 0)[0]
+        prev[name]["num"] = cur[name]["num"] * 2               # it had twice as many pledged last time
+        fresh = sorted(n for n, v in cur.items() if v["num"] > 0)[1]
+        prev[fresh]["num"] = 0.0                               # none pledged last time
+        gone = dict(cur[name], num=0.0, pct=0.0)
+        got = {i["company"]: i["title"] for i in sm.pledge_changes(prev, dict(cur, **{name: gone}))}
+        self.assertEqual(got[name], "%s: pledge fully revoked" % name)
+        self.assertEqual(got[fresh], "%s: fresh pledge" % fresh)
+        got = {i["company"]: i["title"] for i in sm.pledge_changes(prev, cur)}
+        self.assertEqual(got[name], "%s: pledge reduced (released)" % name)
+        self.assertEqual(len(got), 2)
 
-    def test_joint_owner_and_account(self):
-        rep = ptr.parse_ptr_text(text("ptr-20035590.txt"))
-        self.assertEqual([(r["ticker"], r["owner"], r["type"]) for r in rep["rows"]],
-                         [("AMAT", "JT", "S"), ("MCD", "JT", "S (partial)")])
-        self.assertEqual(rep["rows"][0]["account"], "Morgan Stanley - Select UMA Account # 1")
-        self.assertEqual(rep["rows"][0]["notified"], "2026-10-06")
+    def test_shareholding_xbrl_split(self):
+        cur = sm.parse_shp_xbrl(fixture("SHP_1760080_19112026032252_WEB.xml"))
+        self.assertEqual((cur["symbol"], cur["date"]), ("VEEFIN", "2026-11-09"))
+        self.assertEqual((cur["promoter"], cur["fii"], cur["dii"], cur["public"]), (34.73, 2.22, 0.0, 65.27))
+        it = sm.shp_item(cur, dict(cur, fii=0.5, date="2026-09-30"), "link")
+        self.assertIn("FII +1.72 pp", it["detail"])
+        self.assertEqual(it["flags"], ["FII up"])
+        self.assertTrue(it["highlight"])
 
-    def test_self_owned_partial_sales_and_crowded_columns(self):
-        rep = ptr.parse_ptr_text(text("ptr-20035562-excerpt.txt"))
-        tickers = [r["ticker"] for r in rep["rows"]]
-        self.assertEqual(tickers, ["BRK.B", "BIIB", "BA", "BEP", "CVX", "CB", "GLW", "IBM"])
-        self.assertTrue(all(r["owner"] == "" and r["owner_name"] == "self" for r in rep["rows"]))
-        brk = rep["rows"][0]
-        self.assertEqual(brk["type_name"], "partial sale")
-        self.assertEqual(brk["account"], "UBS IRA Account")
-        # "Corning Incorporated Common Stock P" : the type touches the asset text
-        glw = rep["rows"][6]
-        self.assertEqual((glw["type"], glw["asset"]), ("P", "Corning Incorporated Common Stock"))
-        # the asset name runs over three lines
-        self.assertEqual(rep["rows"][7]["asset"],
-                         "International Business Machines Corporation Common Stock")
+    def test_promoter_shift_needs_a_newer_quarter(self):
+        cur = sm.master_snapshot(json.loads(fixture("nse_shp_master.json")))
+        self.assertEqual(sm.promoter_shifts(cur, cur), [])
+        name = sorted(cur)[0]
+        prev = {name: dict(cur[name], promoter=cur[name]["promoter"] + 2.5, when="2026-06-30 00:00", date="30-JUN-2026")}
+        got = sm.promoter_shifts(prev, cur)
+        self.assertEqual(len(got), 1)
+        self.assertIn("promoter stake down 2.50 pp", got[0]["title"])
 
-    def test_page_breaks_exercises_and_exchanges(self):
-        rep = ptr.parse_ptr_text(text("ptr-20033725-excerpt.txt"))
-        by = {r["ticker"]: r for r in rep["rows"]}
-        self.assertEqual(sorted(by), ["NVDA", "PYPL", "TEM", "VSNT", "VST"])
-        tem = by["TEM"]  # the row is split by a page header
-        self.assertEqual(tem["asset"], "Tempus AI, Inc. - Class A Common Stock")
-        self.assertEqual(tem["amount"], "$50,001 - $100,000")
-        self.assertTrue(tem["option"]["exercised"])
-        self.assertEqual(tem["option"]["strike"], 20.0)
-        self.assertEqual(by["PYPL"]["date"], "2025-12-30")
-        self.assertEqual(by["PYPL"]["shares"], 5000)
-        self.assertEqual(by["VSNT"]["type_name"], "exchange")
 
-    def test_late_filings_are_flagged(self):
-        rep = ptr.parse_ptr_text(text("ptr-20035590.txt"), filed="2026-11-15")
-        self.assertTrue(all(r["late"] for r in rep["rows"]))
+class FiiDii(unittest.TestCase):
+    def test_the_days_flows(self):
+        items = sm.fiidii_items(json.loads(fixture("nse_fiidii.json")))
+        dii = [i for i in items if i["symbol"] == "DII"][0]
+        self.assertEqual(dii["title"], "DII net sold Rs 2,760.12 cr on 23-Nov-2026")
+        self.assertTrue(dii["highlight"])                      # over Rs 1,000 cr
+        self.assertEqual(dii["value_cr"], -2760.12)
 
-    def test_parse_cli(self):
-        path = os.path.join(DIR, "ptr-20035143.txt")
-        code, out, _ = run(["parse", path, "--tickers", "BE", "--portfolio", "/nonexistent"])
+
+def workbook(path, rows):
+    """A SYNTHETIC fund-house portfolio file in the SEBI layout: a title block, then a header row."""
+    from openpyxl import Workbook
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Flexi Cap Fund"
+    ws.append(["XYZ Mutual Fund"])
+    ws.append(["Monthly Portfolio Statement as on October 31, 2026"])
+    ws.append([])
+    ws.append(["Name of the Instrument", "ISIN", "Industry", "Quantity", "Market value (Rs. in Lakhs)", "% to Net Assets"])
+    for r in rows:
+        ws.append(r)
+    ws.append(["Government Bond 2030", "IN0020200001", "Sovereign", 1000, 10, 0.1])   # not equity: ignored
+    wb.save(path)
+
+
+class Amfi(unittest.TestCase):
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.d)
+
+    def test_the_directory_lists_fund_house_pages(self):
+        links = sm.amfi_directory('x "https://amc.ppfas.com/downloads/portfolio-disclosure/\\" '
+                                  '"https://choicemf.com/disclosures/monthly-portfolio\\" "https://www.amfiindia.com/x"')
+        self.assertEqual([l["amc_site"] for l in links], ["amc.ppfas.com", "choicemf.com"])
+
+    def test_fresh_buys_and_stake_increases(self):
+        oct_, nov = os.path.join(self.d, "oct.xlsx"), os.path.join(self.d, "nov.xlsx")
+        workbook(oct_, [["Reliance Industries Ltd", "INE002A01018", "Petroleum", 100000, 1300, 4.1],
+                        ["Tata Consultancy Services Ltd", "INE467B01029", "IT", 50000, 1200, 3.8]])
+        workbook(nov, [["Reliance Industries Ltd", "INE002A01018", "Petroleum", 130000, 1700, 5.0],
+                       ["Tata Consultancy Services Ltd", "INE467B01029", "IT", 50000, 1200, 3.8],
+                       ["Infosys Ltd", "INE009A01021", "IT", 20000, 300, 1.0]])
+        self.assertEqual(set(sm.parse_portfolio_excel(oct_)), {"INE002A01018", "INE467B01029"})
+        st = os.path.join(self.d, "state.json")
+        base = ["amfi", "--amc", "XYZ MF", "--state", st, "--out", os.path.join(self.d, "out"), "--json"]
+        code, text, _ = run(base + ["--file", oct_, "--month", "2026-10"])
+        self.assertEqual(json.loads(text)["items"], [])            # the first month is the baseline
+        code, text, _ = run(base + ["--file", nov, "--month", "2026-11"])
+        titles = sorted(i["title"] for i in json.loads(text)["items"])
+        self.assertEqual(titles, ["XYZ MF: fresh buy in Infosys Ltd", "XYZ MF: stake increased 30% in Reliance Industries Ltd"])
+        code, text, _ = run(base + ["--file", nov, "--month", "2026-11"])
+        self.assertEqual([i["new"] for i in json.loads(text)["items"]], [False, False])   # never flagged twice
+
+
+class Cli(unittest.TestCase):
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.base = ["--offline", DIR, "--now", NOW, "--state", os.path.join(self.d, "state.json"),
+                     "--out", os.path.join(self.d, "out"), "--amfi-config", os.path.join(self.d, "none.json")]
+
+    def tearDown(self):
+        shutil.rmtree(self.d)
+
+    def test_a_run_saves_json_and_csv_and_dedupes(self):
+        code, text, _ = run(self.base)
         self.assertEqual(code, 0)
-        self.assertIn("PTR 20035143, filed 2026-08-21", out)
-        code, out, _ = run(["parse", path, "--json"])
-        self.assertEqual(len(json.loads(out)["rows"]), 7)
+        for heading in ("== Bulk/Block deal (16, 7 highlighted)", "== SAST / Takeover (121, 27 highlighted)",
+                        "== FII / DII flows (2, 2 highlighted)", "72 round trips"):
+            self.assertIn(heading, text)
+        self.assertIn("Not financial advice", text)
+        with open(os.path.join(self.d, "out", "latest.json"), encoding="utf-8") as fh:
+            latest = json.load(fh)
+        with open(os.path.join(self.d, "out", "alerts.csv"), encoding="utf-8") as fh:
+            rows = fh.read().splitlines()
+        self.assertEqual(rows[0], ",".join(sm.CSV_FIELDS))
+        self.assertEqual(len(rows) - 1, sum(1 for i in latest["items"] if i["new"]))
+        code, text, _ = run(self.base)
+        self.assertEqual(code, 1)
+        self.assertIn("Nothing new.", text)
+        with open(os.path.join(self.d, "out", "alerts.csv"), encoding="utf-8") as fh:
+            self.assertEqual(len(fh.read().splitlines()), len(rows))   # nothing appended twice
 
-    def test_dates(self):
-        self.assertEqual(ptr.iso("8/21/2026"), "2026-08-21")
-        self.assertEqual(ptr.iso("6/17/27"), "2027-06-17")
-        self.assertIsNone(ptr.iso("13/45/2026"))
+    def test_dry_run_writes_nothing(self):
+        code, text, _ = run(self.base + ["--dry-run", "--only", "deals,fiidii"])
+        self.assertEqual(code, 0)
+        self.assertFalse(os.path.exists(os.path.join(self.d, "out")))
+        self.assertFalse(os.path.exists(os.path.join(self.d, "state.json")))
+
+    def test_a_missing_source_is_a_note_not_a_crash(self):
+        empty = os.path.join(self.d, "empty")
+        os.mkdir(empty)
+        code, text, _ = run(["--offline", empty, "--now", NOW, "--dry-run"])
+        self.assertEqual(code, 1)
+        self.assertIn("note: deals: no offline file", text)
+        self.assertNotIn("Traceback", text)
+        code, _, err = run(self.base + ["--only", "moon"])
+        self.assertNotEqual(code, 0)
 
 
 if __name__ == "__main__":
