@@ -183,6 +183,19 @@ oversold bounce).
 - Never print a P&L, a return or a profit figure.
 - A hit is stale once the price has moved on. Re-run before acting on it.
 
+## Market regime (regime.py)
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/regime.py"          # -> trader/regime/latest.json (before the open, after 15:30)
+```
+
+Five NSE inputs, each -1 / 0 / +1: India VIX (its 1-year percentile and 1-week change, from NSE's market
+mood), breadth (the share of stocks that rose), the Nifty 50 trend (against its 20- and 50-day averages),
+FII index-futures positioning (long share of contracts in NSE's participant-wise OI file) and FII / DII
+cash flows. Score +2 or more is risk-on, -2 or less risk-off, otherwise neutral; VIX at its 80th
+percentile or more says halve the size. The brief shows it on every setup that fights it. A description
+of today, never a block and never a forecast.
+
 ## Global macro engine (global_macro_engine.py)
 
 ```bash
@@ -208,7 +221,9 @@ The 3 gates, each with its evidence in the output:
    CL=F 3 %, copper HG=F 2.5 % ...), or an order >= 5 % of market cap, or
    profit / revenue >= 20 % on last year.
 3. Market: 5 to 15 minutes after the news, a 5-minute bar with >= 2.0x the
-   20-bar average volume, price moving the expected way. Pending before 5
+   volume of the same clock slot on the last 20 sessions (opening bars are
+   always heavy, so they are compared with other opens), price moving the
+   expected way. Pending before 5
    minutes, dropped after 15; news outside hours starts at the next 9:15.
    Volume is not proof that an institution traded.
 

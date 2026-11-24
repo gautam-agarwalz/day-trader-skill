@@ -266,12 +266,12 @@ def gate3(bars, start, now, side, cfg):
     want = 1 if side == "long" else -1
     best = None
     for i, b in win:
-        vr = ib.vol_ratio(bars, i, cfg.get("bars", 20))
+        vr, how = ib.rvol(bars, i, cfg.get("bars", 20))   # vs the same 5-minute slot on earlier sessions
         mv = (b["c"] / ref - 1) * 100 if ref else None
         if vr is not None and vr >= cfg.get("volume_ratio", 2.0) and mv is not None and mv * want > 0:
             return {"status": "confirmed", "bar": "%s %s" % (b["date"], end_of(b).strftime("%H:%M")),
-                    "volume_ratio": vr, "move_pct": round(mv, 2), "why": "%.1fx volume, %+.2f%% since the news"
-                                                                        % (vr, mv)}
+                    "volume_ratio": vr, "volume_vs": how, "move_pct": round(mv, 2),
+                    "why": "%.1fx volume (%s), %+.2f%% since the news" % (vr, how, mv)}
         if vr is not None and (best is None or vr > best[0]):
             best = (vr, mv, b)
     if now <= hi:

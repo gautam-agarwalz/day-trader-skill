@@ -59,6 +59,19 @@ BLOCKED_WINDOWS = (("09:15", "09:30", "opening noise (09:15-09:30)"),     # orde
 STOP_FLOOR_ATR = 0.35
 
 
+def regime_flags(reg, side):
+    """Warnings, never blocks: a long in a risk-off market, a short in a risk-on one, high volatility."""
+    if not reg:
+        return []
+    out = []
+    if (reg.get("regime") == "risk-off" and side == "long") or (reg.get("regime") == "risk-on" and side == "short"):
+        out.append({"flag": "regime %s" % reg["regime"], "why": "a %s against the market's tilt: %s" % (
+            side, reg.get("advice", "")), "link": ""})
+    if reg.get("volatility") == "high":
+        out.append({"flag": "high volatility", "why": "India VIX is high: half size (regime.py)", "link": ""})
+    return out
+
+
 def anti_trap(hhmm, no_after="14:50"):
     """The order block scanner's time guards for any intraday entry: None when the time is fine."""
     for a, z, why in BLOCKED_WINDOWS:
@@ -260,6 +273,9 @@ def build(args, notes):
     data = Data(args, notes, now)
     cands, macro = candidates(args.base, now)
     orders = load(os.path.join(args.base, "orders", "latest.json"))
+    reg = load(os.path.join(args.base, "regime", "latest.json"))        # regime.py (trader-scanner): warn only
+    if reg and (reg.get("checked") or "")[:10] < (now - _dt.timedelta(days=4)).strftime("%Y-%m-%d"):
+        notes.append("the regime file is from %s: run trader-scanner/regime.py" % reg.get("checked"))
     fno, ban = {}, set()
     try:
         fno = im.fno_lots(data.client)
@@ -298,7 +314,7 @@ def build(args, notes):
                                 "why": "%s %s: %s" % (c["side"], c["origin"], g)})
                 continue
         sig = india_signals.signals_for(sym, now, 3, items=items)
-        flags = india_signals.risk_flags(sig, now)
+        flags = india_signals.risk_flags(sig, now) + regime_flags(reg, c["side"])
         lot = fno.get(sym)
         banned = sym in ban
         side = c["side"]
@@ -356,8 +372,10 @@ def build(args, notes):
             seen.add(k)
             uniq.append(c)
     return {"created_by": "trader-timemachine brief", "checked": now.strftime("%Y-%m-%d %H:%M"), "sims": args.sims,
+            "regime": {k: reg.get(k) for k in ("regime", "score", "of", "volatility", "size_hint", "advice",
+                                                "checked")} if reg else None,
             "active": active, "caution": uniq, "waiting": waiting, "notes": notes,
-            "note": "History, not a forecast. Intraday R is before costs; swing figures are after 0.30 %. "
+            "note": "History, not a forecast. Every figure is after costs (india_costs.py). "
                     "Suggestions only: nothing here places an order."}
 
 
@@ -386,8 +404,12 @@ def stat_line(st, kind):
 
 
 def render(doc):
-    out = ["Trade brief %s IST (Time Machine: %d paths per trade)" % (doc["checked"], doc["sims"]), "",
-           "(a) ACTIVE SETUPS: %d" % len(doc["active"])]
+    out = ["Trade brief %s IST (Time Machine: %d paths per trade)" % (doc["checked"], doc["sims"])]
+    rg = doc.get("regime")
+    out.append("Regime: %s" % ("%s (score %+d of %d), volatility %s, size %s: %s" % (
+        rg["regime"].upper(), rg["score"], rg["of"], rg["volatility"], rg["size_hint"], rg["advice"])
+        if rg else "unknown (run trader-scanner/regime.py)"))
+    out += ["", "(a) ACTIVE SETUPS: %d" % len(doc["active"])]
     for n, r in enumerate(doc["active"], 1):
         out.append("%d. %s %s %s  %s" % (n, r["label"], r["symbol"], " ".join(r["tags"]),
                                          "" if r["edge"] else "<- " + r["edge_label"]))

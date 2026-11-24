@@ -112,7 +112,8 @@ The replays above are ordinary days. A filing day is not ordinary, so
 changes, bulk and block deals, and the daily bhavcopy for prices).
 
 ```bash
-python3 "${CLAUDE_SKILL_DIR}/events.py" backfill --years 5     # once (about an hour), resumable
+python3 "${CLAUDE_SKILL_DIR}/events.py" backfill --years 5     # once (hours), resumable: filings first
+python3 "${CLAUDE_SKILL_DIR}/events.py" backfill --years 5 --only deals   # later, if NSE's deals service failed
 python3 "${CLAUDE_SKILL_DIR}/events.py" update                 # the days since (seconds)
 python3 "${CLAUDE_SKILL_DIR}/events.py" types                  # past events of each type
 python3 "${CLAUDE_SKILL_DIR}/events.py" study --type order_win
@@ -206,7 +207,8 @@ mean-threshold entry, the confirmation entry, stop, targets and the statistics;
 every setup is shown, and one that loses money in the simulation says "no edge in
 the Time Machine". (b) `[CAUTION / DO NOT ENTER]`: macro headwinds, EXECUTION
 LAG WATCH / ORDER LOSS / DEBARMENT, setups blocked by the anti-trap guards, the
-F&O ban, surveillance and results-day flags. `plan N` carries the anti-trap
+F&O ban, surveillance and results-day flags. The header shows the market regime
+(trader-scanner/regime.py) and every setup that fights it is flagged. `plan N` carries the anti-trap
 windows into the plan, so trader-risk blocks the same order inside them.
 
 ## Steps

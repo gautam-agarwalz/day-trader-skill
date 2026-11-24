@@ -72,6 +72,7 @@ COST = round(india_costs.cost_pct("delivery", turnover_cr=25), 3)
 MIN_EVENTS = 30
 MIN_TURNOVER_CR = 1.0  # median daily turnover over the 20 sessions before day 0
 SIMS = 10000
+DEALS_BREAKER = 5      # deals failures in a row before a backfill stops asking for deals
 SEED = 7
 STOPS = (1.0, 1.5, 2.0, 3.0)      # x ATR
 TARGETS = (1.0, 1.5, 2.0, 3.0)    # x risk
@@ -348,6 +349,7 @@ def _weekdays(start, end):
 
 def backfill(con, client, start, end, sources=SOURCES, log=print, today=None):
     """Fill the database from `start` to `end` (dates). Resumable: done days and weeks are skipped.
+    Filings and board meetings (weekly, the event study's core) load first, then the daily files.
     A missing bhavcopy on a weekday more than 3 days old is a holiday and is remembered as one."""
     today = today or ih.now_ist().date()
     settled = today - _dt.timedelta(days=3)
@@ -357,6 +359,45 @@ def backfill(con, client, start, end, sources=SOURCES, log=print, today=None):
     def note(msg):
         stats["errors"] += 1
         log("  ! " + msg)
+    if "filings" in sources:
+        monday = start - _dt.timedelta(days=start.weekday())
+        while monday <= end:
+            sunday = monday + _dt.timedelta(days=6)
+            key = monday.isoformat()
+            if not is_loaded(con, "filings", key):
+                try:
+                    stats["calls"] += 1
+                    doc = client.nse_api(ANN % (_dmy(key), _dmy(min(sunday, end).isoformat())), "ann_%s.json" % key)
+                    evs = parse_announcements(doc)
+                    add_events(con, evs)
+                    stats["events"] += len(evs)
+                    if sunday < settled and sunday <= end:
+                        mark_loaded(con, "filings", key, len(evs))
+                    con.commit()
+                    log("  filings week of %s: %d typed events" % (key, len(evs)))
+                except ih.FeedError as e:
+                    note("filings week %s: %s" % (key, e))
+            monday += _dt.timedelta(days=7)
+    if "meetings" in sources:   # NSE filters board meetings by the meeting date; notices come up to ~3 weeks ahead
+        monday = start - _dt.timedelta(days=start.weekday())
+        last = end + _dt.timedelta(days=28)
+        while monday <= last:
+            sunday = monday + _dt.timedelta(days=6)
+            key = monday.isoformat()
+            if not is_loaded(con, "meetings", key):
+                try:
+                    stats["calls"] += 1
+                    doc = client.nse_api(MEETINGS % (_dmy(key), _dmy(sunday.isoformat())), "meetings_%s.json" % key)
+                    evs = [e for e in parse_meetings(doc) if e["time"][:10] <= end.isoformat()]
+                    add_events(con, evs)
+                    stats["events"] += len(evs)
+                    if sunday < settled and sunday <= end:
+                        mark_loaded(con, "meetings", key, len(evs))
+                    con.commit()
+                except ih.FeedError as e:
+                    note("board meetings week %s: %s" % (key, e))
+            monday += _dt.timedelta(days=7)
+    deals_fail, deals_off = [0], [False]
     n = 0
     for d in _weekdays(start, end):
         day = d.isoformat()
@@ -396,7 +437,7 @@ def backfill(con, client, start, end, sources=SOURCES, log=print, today=None):
                     mark_loaded(con, "bands", day, 0)
                 elif "HTTP 404" not in str(e):
                     note("bands %s: %s" % (day, e))
-        if "deals" in sources and trading and not is_loaded(con, "deals", day):
+        if "deals" in sources and trading and not deals_off[0] and not is_loaded(con, "deals", day):
             try:
                 stats["calls"] += 2
                 blk = client.nse_api(DEALS % ("block_deals", _dmy(day), _dmy(day)), "deals_block_%s.json" % day)
@@ -407,50 +448,18 @@ def backfill(con, client, start, end, sources=SOURCES, log=print, today=None):
                 stats["events"] += len(evs)
                 if d < settled:
                     mark_loaded(con, "deals", day, blk_rows)
+                deals_fail[0] = 0
             except ih.FeedError as e:
                 note("deals %s: %s" % (day, e))
+                deals_fail[0] += 1
+                if deals_fail[0] >= DEALS_BREAKER:     # NSE's deals service is down or throttling: stop asking
+                    deals_off[0] = True
+                    log("  ! deals: %d failures in a row; skipped for the rest of this run (prices and filings go "
+                        "on). Fill the gap later: events.py backfill --only deals" % DEALS_BREAKER)
         n += 1
         if n % 20 == 0 and {"bars", "bands", "deals"} & set(sources):
             con.commit()
             log("  %s: %d trading days, %d events so far" % (day, stats["days"], stats["events"]))
-    if "filings" in sources:
-        monday = start - _dt.timedelta(days=start.weekday())
-        while monday <= end:
-            sunday = monday + _dt.timedelta(days=6)
-            key = monday.isoformat()
-            if not is_loaded(con, "filings", key):
-                try:
-                    stats["calls"] += 1
-                    doc = client.nse_api(ANN % (_dmy(key), _dmy(min(sunday, end).isoformat())), "ann_%s.json" % key)
-                    evs = parse_announcements(doc)
-                    add_events(con, evs)
-                    stats["events"] += len(evs)
-                    if sunday < settled and sunday <= end:
-                        mark_loaded(con, "filings", key, len(evs))
-                    con.commit()
-                    log("  filings week of %s: %d typed events" % (key, len(evs)))
-                except ih.FeedError as e:
-                    note("filings week %s: %s" % (key, e))
-            monday += _dt.timedelta(days=7)
-    if "meetings" in sources:   # NSE filters board meetings by the meeting date; notices come up to ~3 weeks ahead
-        monday = start - _dt.timedelta(days=start.weekday())
-        last = end + _dt.timedelta(days=28)
-        while monday <= last:
-            sunday = monday + _dt.timedelta(days=6)
-            key = monday.isoformat()
-            if not is_loaded(con, "meetings", key):
-                try:
-                    stats["calls"] += 1
-                    doc = client.nse_api(MEETINGS % (_dmy(key), _dmy(sunday.isoformat())), "meetings_%s.json" % key)
-                    evs = [e for e in parse_meetings(doc) if e["time"][:10] <= end.isoformat()]
-                    add_events(con, evs)
-                    stats["events"] += len(evs)
-                    if sunday < settled and sunday <= end:
-                        mark_loaded(con, "meetings", key, len(evs))
-                    con.commit()
-                except ih.FeedError as e:
-                    note("board meetings week %s: %s" % (key, e))
-            monday += _dt.timedelta(days=7)
     if "fno" in sources:
         try:
             stats["calls"] += 2

@@ -1,0 +1,67 @@
+{
+ "date": "2026-11-23",
+ "benchmarks": {
+  "Nifty 50": {
+   "close": 25349.65,
+   "change_pct": -1.75
+  },
+  "Nifty Next 50": {
+   "close": 72245.4,
+   "change_pct": -1.31
+  },
+  "Nifty 500": {
+   "close": 23748.15,
+   "change_pct": -1.41
+  },
+  "NIFTY Midcap 100": {
+   "close": 61403.2,
+   "change_pct": -1.01
+  },
+  "NIFTY Smallcap 100": {
+   "close": 19314.4,
+   "change_pct": -0.66
+  }
+ },
+ "index_breadth": {
+  "up": 8,
+  "down": 138,
+  "unchanged": 0,
+  "up_pct": 5.5,
+  "reading": "broad decline",
+  "equity_indices": 146
+ },
+ "stock_breadth": {
+  "up": 813,
+  "down": 2143,
+  "unchanged": 36,
+  "up_pct": 27.2,
+  "reading": "broad decline",
+  "stocks": 2992
+ },
+ "india_vix": {
+  "level": 17.7,
+  "change_1d_pct": 2.18,
+  "vs_1w_ago": {
+   "change_pct": 12.88,
+   "base_level": 15.68,
+   "base_date": "2026-11-16",
+   "direction": "rising"
+  },
+  "vs_1m_ago": {
+   "change_pct": 4.98,
+   "base_level": 16.86,
+   "base_date": "2026-10-23",
+   "direction": "rising"
+  },
+  "range": {
+   "min": 9.15,
+   "max": 27.89,
+   "mean": 14.54,
+   "percentile": 80.5,
+   "window_from": "2025-11-24",
+   "window_to": "2026-11-23",
+   "trading_days": 246
+  }
+ },
+ "method": "index_breadth counts NSE equity indices by sign of NSE's published daily change. stock_breadth counts mainboard stocks (series EQ, BE, BZ) by close vs previous close. breadth reading: 'broad advance' when 60% or more rose, 'broad decline' when 40% or fewer rose, otherwise 'mixed'. india_vix changes compare the closing level with the last trading day on or before 1 week / 1 month earlier; percentile is the share of days in the window shown on which VIX closed lower. These are descriptive statistics, not a forecast."
+}

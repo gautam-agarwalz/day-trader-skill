@@ -128,6 +128,7 @@ python3 trader-news/news.py --days 1                                   # filings
 python3 trader-news/news.py --mine --tags results,buyback              # only your symbols
 python3 trader-news/govt_orders_tracker.py --watch 60                  # govt orders, value vs market cap, lag / loss flags
 python3 trader-pelosi/smartmoney.py                                    # deals, insiders, SAST, pledges, flows
+python3 trader-scanner/regime.py                                       # risk-on / neutral / risk-off: VIX, breadth, trend, FII
 python3 trader-scanner/global_macro_engine.py                          # gold, war, crude, tariffs, Fed, metals: 3 gates
 python3 trader-scanner/order_block_scanner.py                          # order blocks, sweep / absorption, anti-trap guards
 python3 trader-timemachine/brief.py                                    # every setup through the Time Machine -> the brief
@@ -230,7 +231,7 @@ Nothing here is tax advice.
 ## Files
 
 ```
-trader-scanner/     SKILL.md, scan.py, global_macro_engine.py, order_block_scanner.py, macro_map.json,
+trader-scanner/     SKILL.md, scan.py, regime.py, global_macro_engine.py, order_block_scanner.py, macro_map.json,
                     nse_data.py, india_signals.py, india_http.py, india_market.py, india_bars.py
 trader-news/        SKILL.md, news.py, govt_orders_tracker.py, india_http.py, india_results.py,
                     india_catalysts.py, india_market.py

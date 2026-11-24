@@ -275,6 +275,36 @@ def vol_avg(bars, i, n=20):
     return sum(b["v"] for b in rows) / len(rows) if rows else None
 
 
+def slot_rvol(bars, i, sessions=20, min_sessions=5):
+    """Bar i's volume over the MEDIAN volume of the same clock slot (same start time) in the previous
+    `sessions` sessions. Opening bars trade 3-10x the afternoon's, so comparing a 09:20 bar with the 20 bars
+    before it (yesterday's afternoon) calls every open "heavy"; the same slot on other days does not.
+    None for daily bars or with fewer than min_sessions earlier sessions."""
+    b = bars[i]
+    if not b.get("time"):
+        return None
+    vols = []
+    for x in reversed(bars[:i]):
+        if x["date"] < b["date"] and x.get("time") == b["time"]:
+            vols.append(x["v"])
+            if len(vols) >= sessions:
+                break
+    if len(vols) < min_sessions:
+        return None
+    vols.sort()
+    med = vols[len(vols) // 2]
+    return round(b["v"] / med, 2) if med > 0 else None
+
+
+def rvol(bars, i, n=20, sessions=20):
+    """(relative volume, how): the same-slot median when there is enough history (intraday), else the plain
+    average of the previous n bars (daily bars, short history)."""
+    r = slot_rvol(bars, i, sessions)
+    if r is not None:
+        return r, "same slot, last %d sessions" % sessions
+    return vol_ratio(bars, i, n), "previous %d bars" % n
+
+
 def vol_ratio(bars, i, n=20):
     """Bar i's volume over the average of the n bars before it (None when there is no history)."""
     a = vol_avg(bars, i, n)

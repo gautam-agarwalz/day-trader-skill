@@ -151,7 +151,7 @@ def candle_share(b):
 def confirmation(bars, ob, j, swing_level=None, vol_n=20):
     """('sweep and reclaim' | 'absorption' | None, volume ratio) for bar j against the OB."""
     b = bars[j]
-    vr = ib.vol_ratio(bars, j, vol_n)
+    vr, _how = ib.rvol(bars, j, vol_n)          # intraday: vs the same clock slot on earlier sessions
     if vr is None or vr < VOL_CONFIRM:
         return None, vr
     bull = ob["side"] == "bull"
